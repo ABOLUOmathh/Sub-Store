@@ -198,32 +198,264 @@ function URI_PROXY() {
 }
 function URI_SOCKS() {
     const name = 'URI SOCKS Parser';
+
     const test = (line) => {
         return /^socks:\/\//.test(line);
     };
+
+    const parseQueryParams = (rawQuery = '') => {
+        const params = {};
+
+        for (const item of rawQuery.replace(/^\?/, '').split('&')) {
+            if (!item) continue;
+
+            const separatorIndex = item.indexOf('=');
+
+            const keyRaw =
+                separatorIndex === -1 ? item : item.slice(0, separatorIndex);
+
+            const valueRaw =
+                separatorIndex === -1 ? '' : item.slice(separatorIndex + 1);
+
+            const key = decodeURIComponent(keyRaw);
+            const value = decodeURIComponent(valueRaw);
+
+            params[key] = value;
+        }
+
+        return params;
+    };
+
+    const parseHostPort = (endpoint) => {
+        if (endpoint.startsWith('[')) {
+            const matched = endpoint.match(/^\[([^\]]+)\]:(\d+)$/);
+
+            if (!matched) {
+                throw new Error(`invalid SOCKS server endpoint: ${endpoint}`);
+            }
+
+            return {
+                server: matched[1],
+                port: parseInt(matched[2], 10),
+            };
+        }
+
+        const portIndex = endpoint.lastIndexOf(':');
+
+        if (portIndex === -1) {
+            throw new Error(
+                `port is not present in SOCKS endpoint: ${endpoint}`,
+            );
+        }
+
+        const server = endpoint.slice(0, portIndex);
+        const port = parseInt(endpoint.slice(portIndex + 1), 10);
+
+        if (!server || !Number.isInteger(port)) {
+            throw new Error(`invalid SOCKS server endpoint: ${endpoint}`);
+        }
+
+        return {
+            server,
+            port,
+        };
+    };
+
     const parse = (line) => {
+        /*
+         * Extended SOCKS + GOST format:
+         *
+         * socks://Base64(
+         *   urlencoded(username):urlencoded(password)@server:port
+         * )?remarks=...&gost=Base64(JSON)
+         *
+         * Example GOST metadata:
+         *
+         * {
+         *   "path": "/gost",
+         *   "host": "example.com",
+         *   "route": "ws"
+         * }
+         */
+        const raw = line.slice('socks://'.length);
+
+        const hashIndex = raw.indexOf('#');
+
+        const rawWithoutFragment =
+            hashIndex === -1 ? raw : raw.slice(0, hashIndex);
+
+        const fragment =
+            hashIndex === -1
+                ? undefined
+                : decodeURIComponent(raw.slice(hashIndex + 1));
+
+        const queryIndex = rawWithoutFragment.indexOf('?');
+
+        const encodedContent =
+            queryIndex === -1
+                ? rawWithoutFragment
+                : rawWithoutFragment.slice(0, queryIndex);
+
+        const rawQuery =
+            queryIndex === -1 ? '' : rawWithoutFragment.slice(queryIndex + 1);
+
+        const params = parseQueryParams(rawQuery);
+
+        /*
+         * Service-provider extended GOST SOCKS URI.
+         */
+        if (params.gost) {
+            const decodedContent = Base64.decode(
+                decodeURIComponent(encodedContent),
+            );
+
+            const atIndex = decodedContent.lastIndexOf('@');
+
+            if (atIndex === -1) {
+                throw new Error(
+                    `invalid GOST SOCKS authentication/server payload`,
+                );
+            }
+
+            const auth = decodedContent.slice(0, atIndex);
+            const endpoint = decodedContent.slice(atIndex + 1);
+
+            /*
+             * Important:
+             *
+             * Split before decodeURIComponent().
+             *
+             * pro%3Au123:password
+             *
+             * must become:
+             *
+             * username = pro:u123
+             * password = password
+             */
+            const authSeparatorIndex = auth.indexOf(':');
+
+            if (authSeparatorIndex === -1) {
+                throw new Error(`invalid GOST SOCKS authentication payload`);
+            }
+
+            const username = decodeURIComponent(
+                auth.slice(0, authSeparatorIndex),
+            );
+
+            const password = decodeURIComponent(
+                auth.slice(authSeparatorIndex + 1),
+            );
+
+            let { server, port } = parseHostPort(endpoint);
+
+            let gost;
+
+            try {
+                gost = JSON.parse(Base64.decode(params.gost));
+            } catch (error) {
+                throw new Error(
+                    `invalid GOST SOCKS metadata: ${error.message}`,
+                );
+            }
+
+            /*
+             * Some providers may optionally override the real
+             * connection address/port inside gost metadata.
+             */
+            const gostAddress = getIfNotBlank(gost.address);
+            const gostPort = getIfNotBlank(gost.port);
+
+            if (gostAddress) {
+                server = gostAddress;
+            }
+
+            if (gostPort) {
+                const parsedPort = parseInt(gostPort, 10);
+
+                if (!Number.isInteger(parsedPort)) {
+                    throw new Error(`invalid GOST SOCKS port: ${gostPort}`);
+                }
+
+                port = parsedPort;
+            }
+
+            const route = getIfNotBlank(gost.route);
+
+            const normalizedRoute = route?.trim().toLowerCase();
+
+            if (!['ws', 'wss', 'websocket'].includes(normalizedRoute)) {
+                throw new Error(`unsupported GOST SOCKS route: ${route}`);
+            }
+
+            const wsHost = getIfNotBlank(gost.host) || server;
+
+            const wsPath = getIfNotBlank(gost.path) || '/';
+
+            const proxy = {
+                name:
+                    getIfNotBlank(params.remarks) ||
+                    fragment ||
+                    `socks ${server}:${port}`,
+                type: 'socks5',
+                server,
+                port,
+                username,
+                password,
+                network: 'ws',
+                'ws-opts': {
+                    path: wsPath,
+                    headers: {
+                        Host: wsHost,
+                    },
+                },
+            };
+
+            /*
+             * wss = WebSocket over TLS.
+             *
+             * Our custom Mihomo SOCKS implementation uses:
+             *
+             * network: ws
+             * tls: true
+             */
+            if (normalizedRoute === 'wss') {
+                proxy.tls = true;
+            }
+
+            return proxy;
+        }
+
+        /*
+         * Original Sub-Store SOCKS URI behavior.
+         * Keep this path unchanged for backward compatibility.
+         */
+
         // parse url
         // eslint-disable-next-line no-unused-vars
-        let [__, type, auth, server, port, query, name] = line.match(
+        let [__, type, auth, server, port, query, uriName] = line.match(
             /^(socks)?:\/\/(?:(.*)@)?(.*?)(?::(\d+?))?(\?.*?)?(?:#(.*?))?$/,
         );
+
         if (port) {
             port = parseInt(port, 10);
         } else {
             $.error(`port is not present in line: ${line}`);
             throw new Error(`port is not present in line: ${line}`);
         }
+
         let username, password;
+
         if (auth) {
             const parsed = Base64.decode(decodeURIComponent(auth)).split(':');
+
             username = parsed[0];
             password = parsed[1];
         }
 
         const proxy = {
             name:
-                name != null
-                    ? decodeURIComponent(name)
+                uriName != null
+                    ? decodeURIComponent(uriName)
                     : `${type} ${server}:${port}`,
             type: 'socks5',
             server,
@@ -234,8 +466,10 @@ function URI_SOCKS() {
 
         return proxy;
     };
+
     return { name, test, parse };
 }
+
 // Parse SS URI format (only supports new SIP002, legacy format is depreciated).
 // reference: https://github.com/shadowsocks/shadowsocks-org/wiki/SIP002-URI-Scheme
 function URI_SS() {
