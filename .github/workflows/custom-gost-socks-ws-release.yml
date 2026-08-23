@@ -1,0 +1,80 @@
+name: Custom GOST SOCKS WebSocket Release
+
+on:
+  push:
+    branches:
+      - feat/gost-socks-ws-parser
+    paths:
+      - "backend/**"
+      - ".node-version"
+      - ".github/workflows/custom-gost-socks-ws-release.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: custom-gost-socks-ws-release
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build custom Sub-Store
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: ".node-version"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pnpm install
+
+      - name: Run tests
+        working-directory: backend
+        run: pnpm test
+
+      - name: Build bundle
+        working-directory: backend
+        run: pnpm bundle:esbuild
+
+      - name: Verify custom GOST parser
+        working-directory: backend
+        run: |
+          grep -F \
+            "unsupported GOST SOCKS route" \
+            dist/sub-store.bundle.js
+
+          node --check dist/sub-store.bundle.js
+
+      - name: Prepare release
+        run: |
+          mkdir -p release
+          cp \
+            backend/dist/sub-store.bundle.js \
+            release/sub-store.bundle.js
+
+      - name: Remove previous custom release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete custom-gost-socks-ws \
+            --repo "${{ github.repository }}" \
+            --yes \
+            --cleanup-tag || true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: custom-gost-socks-ws
+          target_commitish: ${{ github.sha }}
+          name: Custom GOST SOCKS WebSocket Sub-Store
+          prerelease: true
+          files: release/sub-store.bundle.js
