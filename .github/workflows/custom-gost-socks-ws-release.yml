@@ -1,0 +1,481 @@
+name: Custom GOST SOCKS WebSocket Versioned Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Immutable release version, e.g. 2.36.40-custom.1"
+        required: true
+        type: string
+      source_ref:
+        description: "Custom source branch or commit to release"
+        required: true
+        default: "sync/sub-store-2.36.40"
+        type: string
+      mihomo_ua_version:
+        description: "Pinned Mihomo fallback User-Agent version"
+        required: true
+        default: "v1.19.30"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: custom-sub-store-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      base_tag: ${{ steps.meta.outputs.base_tag }}
+      source_sha: ${{ steps.meta.outputs.source_sha }}
+      mihomo_ua_version: ${{ steps.meta.outputs.mihomo_ua_version }}
+
+    steps:
+      - name: Checkout requested source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+
+      - name: Validate version, source and upstream base
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          MIHOMO_UA_VERSION: ${{ inputs.mihomo_ua_version }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${RELEASE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-custom\.[1-9][0-9]*$ ]]; then
+            echo "Invalid release version: ${RELEASE_VERSION}" >&2
+            exit 1
+          fi
+
+          if [[ ! "${MIHOMO_UA_VERSION}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-custom\.[1-9][0-9]*)?$ ]]; then
+            echo "Invalid Mihomo User-Agent version: ${MIHOMO_UA_VERSION}" >&2
+            exit 1
+          fi
+
+          BASE_TAG="${RELEASE_VERSION%%-custom.*}"
+          SOURCE_SHA="$(git rev-parse HEAD)"
+
+          echo "Requested version: ${RELEASE_VERSION}"
+          echo "Requested source ref: ${SOURCE_REF}"
+          echo "Resolved source SHA: ${SOURCE_SHA}"
+          echo "Expected upstream base: ${BASE_TAG}"
+          echo "Pinned Mihomo User-Agent: ${MIHOMO_UA_VERSION}"
+
+          git fetch --no-tags \
+            https://github.com/sub-store-org/Sub-Store.git \
+            "refs/tags/${BASE_TAG}:refs/remotes/release-upstream/tags/${BASE_TAG}"
+
+          git fetch --no-tags \
+            https://github.com/sub-store-org/Sub-Store.git \
+            "refs/heads/master:refs/remotes/release-upstream/master"
+
+          BASE_SHA="$(
+            git rev-parse \
+              "refs/remotes/release-upstream/tags/${BASE_TAG}^{commit}"
+          )"
+
+          UPSTREAM_MASTER_SHA="$(
+            git rev-parse \
+              refs/remotes/release-upstream/master
+          )"
+
+          MERGE_BASE="$(
+            git merge-base \
+              "${SOURCE_SHA}" \
+              "${UPSTREAM_MASTER_SHA}"
+          )"
+
+          echo "Base SHA: ${BASE_SHA}"
+          echo "Upstream master SHA: ${UPSTREAM_MASTER_SHA}"
+          echo "Merge base: ${MERGE_BASE}"
+
+          if [[ "${MERGE_BASE}" != "${BASE_SHA}" ]]; then
+            echo \
+              "Source is not based exactly on upstream ${BASE_TAG}." \
+              >&2
+            exit 1
+          fi
+
+          PACKAGE_VERSION="$(
+            node -p "require('./backend/package.json').version"
+          )"
+
+          if [[ "${PACKAGE_VERSION}" != "${BASE_TAG}" ]]; then
+            echo \
+              "backend/package.json version ${PACKAGE_VERSION} does not match upstream base ${BASE_TAG}." \
+              >&2
+            exit 1
+          fi
+
+          test -f \
+            backend/src/test/proxy-parsers/socks-gost-uri.spec.js
+
+          grep -F \
+            "unsupported GOST SOCKS route" \
+            backend/src/core/proxy-utils/parsers/index.js \
+            >/dev/null
+
+          if git ls-remote \
+            --exit-code \
+            --tags \
+            origin \
+            "refs/tags/${RELEASE_VERSION}" \
+            >/dev/null 2>&1
+          then
+            echo "Tag ${RELEASE_VERSION} already exists." >&2
+            exit 1
+          fi
+
+          if gh release view \
+            "${RELEASE_VERSION}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            >/dev/null 2>&1
+          then
+            echo "Release ${RELEASE_VERSION} already exists." >&2
+            exit 1
+          fi
+
+          {
+            echo "version=${RELEASE_VERSION}"
+            echo "base_tag=${BASE_TAG}"
+            echo "source_sha=${SOURCE_SHA}"
+            echo "mihomo_ua_version=${MIHOMO_UA_VERSION}"
+          } >> "${GITHUB_OUTPUT}"
+
+  test:
+    name: Release gate tests
+    needs: validate
+    runs-on: ubuntu-latest
+
+    env:
+      MIHOMO_UA_VERSION: ${{ needs.validate.outputs.mihomo_ua_version }}
+
+    steps:
+      - name: Checkout resolved source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: ".node-version"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pnpm install --frozen-lockfile
+
+      - name: Pin Mihomo fallback User-Agent
+        working-directory: backend
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+
+          const version = process.env.MIHOMO_UA_VERSION;
+
+          const files = [
+              'src/utils/download.js',
+              'src/utils/flow.js',
+          ];
+
+          let replacements = 0;
+
+          for (const file of files) {
+              const source = fs.readFileSync(file, 'utf8');
+
+              const next = source.replace(
+                  /clash\.meta\/[^"']+/g,
+                  () => {
+                      replacements += 1;
+                      return `clash.meta/${version}`;
+                  },
+              );
+
+              fs.writeFileSync(file, next);
+          }
+
+          if (replacements !== 2) {
+              throw new Error(
+                  `Expected exactly 2 Mihomo User-Agent replacements, got ${replacements}`,
+              );
+          }
+          NODE
+
+      - name: Run custom regression tests
+        working-directory: backend
+        run: |
+          pnpm exec mocha \
+            src/test/proxy-parsers/socks-gost-uri.spec.js \
+            --require @babel/register
+
+      - name: Run full test suite
+        working-directory: backend
+        run: pnpm test
+
+  build:
+    name: Build immutable bundle
+    needs:
+      - validate
+      - test
+    runs-on: ubuntu-latest
+
+    env:
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+      BASE_TAG: ${{ needs.validate.outputs.base_tag }}
+      SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+      MIHOMO_UA_VERSION: ${{ needs.validate.outputs.mihomo_ua_version }}
+
+    steps:
+      - name: Checkout resolved source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: ".node-version"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pnpm install --frozen-lockfile
+
+      - name: Pin Mihomo fallback User-Agent
+        working-directory: backend
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+
+          const version = process.env.MIHOMO_UA_VERSION;
+
+          const files = [
+              'src/utils/download.js',
+              'src/utils/flow.js',
+          ];
+
+          let replacements = 0;
+
+          for (const file of files) {
+              const source = fs.readFileSync(file, 'utf8');
+
+              const next = source.replace(
+                  /clash\.meta\/[^"']+/g,
+                  () => {
+                      replacements += 1;
+                      return `clash.meta/${version}`;
+                  },
+              );
+
+              fs.writeFileSync(file, next);
+          }
+
+          if (replacements !== 2) {
+              throw new Error(
+                  `Expected exactly 2 Mihomo User-Agent replacements, got ${replacements}`,
+              );
+          }
+          NODE
+
+      - name: Build bundle
+        working-directory: backend
+        run: pnpm bundle:esbuild
+
+      - name: Add immutable Custom release metadata
+        run: |
+          set -euo pipefail
+
+          BUNDLE="backend/dist/sub-store.bundle.js"
+          TEMP_FILE="$(mktemp)"
+
+          {
+            echo "// SUB_STORE_CUSTOM_RELEASE: ${RELEASE_VERSION}"
+            echo "// SUB_STORE_SOURCE_COMMIT: ${SOURCE_SHA}"
+            echo "// SUB_STORE_MIHOMO_UA_VERSION: ${MIHOMO_UA_VERSION}"
+            cat "${BUNDLE}"
+          } > "${TEMP_FILE}"
+
+          mv "${TEMP_FILE}" "${BUNDLE}"
+
+      - name: Verify built bundle
+        run: |
+          set -euo pipefail
+
+          BUNDLE="backend/dist/sub-store.bundle.js"
+
+          test -s "${BUNDLE}"
+
+          grep -F \
+            "SUB_STORE_CUSTOM_RELEASE: ${RELEASE_VERSION}" \
+            "${BUNDLE}" \
+            >/dev/null
+
+          grep -F \
+            "SUB_STORE_SOURCE_COMMIT: ${SOURCE_SHA}" \
+            "${BUNDLE}" \
+            >/dev/null
+
+          grep -F \
+            "SUB_STORE_MIHOMO_UA_VERSION: ${MIHOMO_UA_VERSION}" \
+            "${BUNDLE}" \
+            >/dev/null
+
+          grep -F \
+            "SUB_STORE_BACKEND_VERSION: ${BASE_TAG}" \
+            "${BUNDLE}" \
+            >/dev/null
+
+          grep -F \
+            "unsupported GOST SOCKS route" \
+            "${BUNDLE}" \
+            >/dev/null
+
+          grep -F \
+            "clash.meta/${MIHOMO_UA_VERSION}" \
+            "${BUNDLE}" \
+            >/dev/null
+
+          node --check "${BUNDLE}"
+
+      - name: Prepare release assets
+        run: |
+          set -euo pipefail
+
+          mkdir -p release
+
+          cp \
+            backend/dist/sub-store.bundle.js \
+            release/sub-store.bundle.js
+
+          RELEASE_VERSION="${RELEASE_VERSION}" \
+          BASE_TAG="${BASE_TAG}" \
+          SOURCE_SHA="${SOURCE_SHA}" \
+          MIHOMO_UA_VERSION="${MIHOMO_UA_VERSION}" \
+          node <<'NODE'
+          const fs = require('fs');
+
+          const manifest = {
+              releaseVersion: process.env.RELEASE_VERSION,
+              upstreamBase: process.env.BASE_TAG,
+              sourceCommit: process.env.SOURCE_SHA,
+              mihomoFallbackUserAgentVersion:
+                  process.env.MIHOMO_UA_VERSION,
+          };
+
+          fs.writeFileSync(
+              'release/release-manifest.json',
+              `${JSON.stringify(manifest, null, 2)}\n`,
+          );
+          NODE
+
+          (
+            cd release
+
+            sha256sum \
+              sub-store.bundle.js \
+              release-manifest.json \
+              > checksums.txt
+          )
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: sub-store-custom-${{ needs.validate.outputs.version }}
+          path: |
+            release/sub-store.bundle.js
+            release/release-manifest.json
+            release/checksums.txt
+          if-no-files-found: error
+
+  release:
+    name: Publish immutable custom release
+    needs:
+      - validate
+      - build
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+      BASE_TAG: ${{ needs.validate.outputs.base_tag }}
+      SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+      MIHOMO_UA_VERSION: ${{ needs.validate.outputs.mihomo_ua_version }}
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v5
+        with:
+          name: sub-store-custom-${{ needs.validate.outputs.version }}
+          path: release
+
+      - name: Verify release assets
+        run: |
+          set -euo pipefail
+
+          cd release
+          sha256sum -c checksums.txt
+
+      - name: Recheck immutable release state
+        run: |
+          set -euo pipefail
+
+          if gh release view \
+            "${RELEASE_VERSION}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            >/dev/null 2>&1
+          then
+            echo "Release ${RELEASE_VERSION} already exists." >&2
+            exit 1
+          fi
+
+          if gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_VERSION}" \
+            >/dev/null 2>&1
+          then
+            echo "Tag ${RELEASE_VERSION} already exists." >&2
+            exit 1
+          fi
+
+      - name: Publish release
+        run: |
+          set -euo pipefail
+
+          cat > release-notes.md <<EOF
+          Immutable Custom Sub-Store backend release.
+
+          Upstream base: ${BASE_TAG}
+          Custom release: ${RELEASE_VERSION}
+          Source commit: ${SOURCE_SHA}
+          Runtime Sub-Store version: ${BASE_TAG}
+          Mihomo fallback User-Agent version: ${MIHOMO_UA_VERSION}
+          EOF
+
+          gh release create \
+            "${RELEASE_VERSION}" \
+            release/sub-store.bundle.js \
+            release/release-manifest.json \
+            release/checksums.txt \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${SOURCE_SHA}" \
+            --title "Sub-Store ${RELEASE_VERSION}" \
+            --notes-file release-notes.md \
+            --prerelease
