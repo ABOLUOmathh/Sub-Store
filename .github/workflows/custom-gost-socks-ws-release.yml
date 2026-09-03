@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Immutable release version, e.g. 2.36.40-custom.1"
+        description: "Immutable release version, e.g. 2.37.0-custom.1"
         required: true
         type: string
       source_ref:
         description: "Custom source branch or commit to release"
         required: true
-        default: "sync/sub-store-2.36.40"
+        default: "sync/sub-store-2.37.0"
         type: string
       mihomo_ua_version:
         description: "Pinned Mihomo fallback User-Agent version"
@@ -360,6 +360,30 @@ jobs:
           mkdir -p release
 
           cp \
+            backend/sub-store.min.js \
+            release/sub-store.min.js
+
+          cp \
+            backend/dist/sub-store-0.min.js \
+            release/sub-store-0.min.js
+
+          cp \
+            backend/dist/sub-store-1.min.js \
+            release/sub-store-1.min.js
+
+          cp \
+            backend/dist/sub-store-parser.loon.min.js \
+            release/sub-store-parser.loon.min.js
+
+          cp \
+            backend/dist/cron-sync-artifacts.min.js \
+            release/cron-sync-artifacts.min.js
+
+          cp \
+            backend/dist/proxy-utils.esm.mjs \
+            release/proxy-utils.esm.mjs
+
+          cp \
             backend/dist/sub-store.bundle.js \
             release/sub-store.bundle.js
 
@@ -370,12 +394,23 @@ jobs:
           node <<'NODE'
           const fs = require('fs');
 
+          const runtimeAssets = [
+              'sub-store.min.js',
+              'sub-store-0.min.js',
+              'sub-store-1.min.js',
+              'sub-store-parser.loon.min.js',
+              'cron-sync-artifacts.min.js',
+              'proxy-utils.esm.mjs',
+              'sub-store.bundle.js',
+          ];
+
           const manifest = {
               releaseVersion: process.env.RELEASE_VERSION,
               upstreamBase: process.env.BASE_TAG,
               sourceCommit: process.env.SOURCE_SHA,
               mihomoFallbackUserAgentVersion:
                   process.env.MIHOMO_UA_VERSION,
+              runtimeAssets,
           };
 
           fs.writeFileSync(
@@ -388,6 +423,12 @@ jobs:
             cd release
 
             sha256sum \
+              sub-store.min.js \
+              sub-store-0.min.js \
+              sub-store-1.min.js \
+              sub-store-parser.loon.min.js \
+              cron-sync-artifacts.min.js \
+              proxy-utils.esm.mjs \
               sub-store.bundle.js \
               release-manifest.json \
               > checksums.txt
@@ -398,6 +439,12 @@ jobs:
         with:
           name: sub-store-custom-${{ needs.validate.outputs.version }}
           path: |
+            release/sub-store.min.js
+            release/sub-store-0.min.js
+            release/sub-store-1.min.js
+            release/sub-store-parser.loon.min.js
+            release/cron-sync-artifacts.min.js
+            release/proxy-utils.esm.mjs
             release/sub-store.bundle.js
             release/release-manifest.json
             release/checksums.txt
@@ -471,6 +518,12 @@ jobs:
 
           gh release create \
             "${RELEASE_VERSION}" \
+            release/sub-store.min.js \
+            release/sub-store-0.min.js \
+            release/sub-store-1.min.js \
+            release/sub-store-parser.loon.min.js \
+            release/cron-sync-artifacts.min.js \
+            release/proxy-utils.esm.mjs \
             release/sub-store.bundle.js \
             release/release-manifest.json \
             release/checksums.txt \
