@@ -37,6 +37,115 @@ function captureErrors(fn) {
 }
 
 describe('Proxy structured producers', function () {
+    it('parses and emits proprietary HeySocks XHTTP without hijacking VLESS XHTTP', function () {
+        const [proxy] = ProxyUtils.parse(
+            JSON.stringify({
+                type: 'xhttp',
+                name: 'HeySocks XHTTP',
+                server: 'xhttp.example.com',
+                port: 443,
+                password: 'abc:03010203',
+                cipher: 'aes-128-ctr',
+
+                udp: true,
+                'udp-over-tcp': true,
+                'udp-over-tcp-version': 0,
+
+                'padding-len': '8-64',
+                'fake-net': {
+                    tcp: '',
+                    udp: '',
+                },
+
+                e: false,
+                h: '',
+                clover: 0,
+
+                // Compatibility/export metadata may coexist with
+                // proprietary top-level type:xhttp.
+                network: 'xhttp',
+                tls: true,
+                alpn: ['h2'],
+                'client-fingerprint': 'chrome',
+                'xhttp-opts': {
+                    host: 'cdn.example.com',
+                    path: '/heysocks-xhttp',
+                },
+            }),
+        );
+
+        expectSubset(proxy, {
+            type: 'xhttp',
+            name: 'HeySocks XHTTP',
+            server: 'xhttp.example.com',
+            port: 443,
+            password: 'abc:03010203',
+            cipher: 'aes-128-ctr',
+            udp: true,
+            'udp-over-tcp': true,
+            'udp-over-tcp-version': 0,
+            'padding-len': '8-64',
+            'fake-net': {
+                tcp: '',
+                udp: '',
+            },
+            network: 'xhttp',
+            'xhttp-opts': {
+                host: 'cdn.example.com',
+                path: '/heysocks-xhttp',
+            },
+        });
+
+        const output = loadProducedYaml('Mihomo', proxy).proxies;
+
+        expect(output).to.have.length(1);
+
+        expectSubset(output[0], {
+            type: 'xhttp',
+            name: 'HeySocks XHTTP',
+            server: 'xhttp.example.com',
+            port: 443,
+            password: 'abc:03010203',
+            cipher: 'aes-128-ctr',
+            udp: true,
+            'udp-over-tcp': true,
+            'udp-over-tcp-version': 0,
+            'padding-len': '8-64',
+            'fake-net': {
+                tcp: '',
+                udp: '',
+            },
+            network: 'xhttp',
+            'xhttp-opts': {
+                host: 'cdn.example.com',
+                path: '/heysocks-xhttp',
+            },
+        });
+
+        const vless = {
+            type: 'vless',
+            name: 'Standard VLESS XHTTP Boundary',
+            server: 'vless-xhttp.example.com',
+            port: 443,
+            uuid: UUID,
+            tls: true,
+            network: 'xhttp',
+            'xhttp-opts': {
+                path: '/standard-vless-xhttp',
+            },
+        };
+
+        const vlessOutput =
+            loadProducedYaml('Mihomo', vless).proxies;
+
+        expect(vlessOutput).to.have.length(1);
+        expect(vlessOutput[0].type).to.equal('vless');
+        expect(vlessOutput[0].network).to.equal('xhttp');
+        expect(vlessOutput[0]['xhttp-opts'].path).to.equal(
+            '/standard-vless-xhttp',
+        );
+    });
+
     it('filters unsupported Clash proxies by default and normalizes vmess ws early data', function () {
         const proxies = [
             {
