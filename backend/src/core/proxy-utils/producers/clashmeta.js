@@ -170,7 +170,7 @@ export default function ClashMeta_Producer() {
                 ) {
                     return false;
                 } else if (
-                    !['vless'].includes(proxy.type) &&
+                    !['vless', 'xhttp'].includes(proxy.type) &&
                     ['xhttp'].includes(proxy.network)
                 ) {
                     return false;
