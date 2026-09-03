@@ -470,6 +470,269 @@ function URI_SOCKS() {
     return { name, test, parse };
 }
 
+
+// Parse HeySocks proprietary XHTTP canonical URI v1.
+// This is independent from VLESS:
+//     vless://...?type=xhttp...
+function URI_XHTTP() {
+    const name = 'URI HeySocks XHTTP Parser';
+
+    const test = (line) => {
+        return /^xhttp:\/\//.test(line);
+    };
+
+    const decode = (value) => {
+        // decodeURIComponent does not convert "+" to space.
+        return decodeURIComponent(value);
+    };
+
+    const parseFlag = (value, field) => {
+        if (value === '0') {
+            return false;
+        }
+
+        if (value === '1') {
+            return true;
+        }
+
+        throw new Error(
+            `Invalid HeySocks XHTTP ${field}: expected 0 or 1`,
+        );
+    };
+
+    const parse = (line) => {
+        const prefix = 'xhttp://';
+
+        let body = line.slice(prefix.length);
+
+        let fragment = '';
+        const hash = body.indexOf('#');
+
+        if (hash !== -1) {
+            fragment = body.slice(hash + 1);
+            body = body.slice(0, hash);
+        }
+
+        const queryIndex = body.indexOf('?');
+
+        if (queryIndex === -1) {
+            throw new Error(
+                'HeySocks XHTTP query is required',
+            );
+        }
+
+        const authorityPart =
+            body.slice(0, queryIndex);
+
+        const queryString =
+            body.slice(queryIndex + 1);
+
+        const at =
+            authorityPart.lastIndexOf('@');
+
+        if (at <= 0) {
+            throw new Error(
+                'HeySocks XHTTP password is required',
+            );
+        }
+
+        const password =
+            decode(authorityPart.slice(0, at));
+
+        const authority =
+            authorityPart.slice(at + 1);
+
+        let server;
+        let portRaw;
+
+        if (authority.startsWith('[')) {
+            const close =
+                authority.indexOf(']');
+
+            if (
+                close <= 1 ||
+                authority[close + 1] !== ':'
+            ) {
+                throw new Error(
+                    'Invalid HeySocks XHTTP IPv6 authority',
+                );
+            }
+
+            server =
+                authority.slice(1, close);
+
+            portRaw =
+                authority.slice(close + 2);
+        } else {
+            const colon =
+                authority.lastIndexOf(':');
+
+            if (colon <= 0) {
+                throw new Error(
+                    'Invalid HeySocks XHTTP authority',
+                );
+            }
+
+            server =
+                authority.slice(0, colon);
+
+            portRaw =
+                authority.slice(colon + 1);
+
+            if (server.includes(':')) {
+                throw new Error(
+                    'HeySocks XHTTP IPv6 must use brackets',
+                );
+            }
+        }
+
+        if (!/^\d+$/.test(portRaw)) {
+            throw new Error(
+                'Invalid HeySocks XHTTP port',
+            );
+        }
+
+        const port = Number(portRaw);
+
+        if (port < 1 || port > 65535) {
+            throw new Error(
+                'Invalid HeySocks XHTTP port range',
+            );
+        }
+
+        const params = {};
+        const allowed = new Set([
+            'v',
+            'cipher',
+            'udp',
+            'uot',
+            'uot-version',
+            'padding',
+            'e',
+            'h',
+            'fake-tcp',
+            'fake-udp',
+        ]);
+
+        for (const item of queryString.split('&')) {
+            if (!item) {
+                continue;
+            }
+
+            const eq = item.indexOf('=');
+
+            if (eq === -1) {
+                throw new Error(
+                    `Invalid XHTTP query item: ${item}`,
+                );
+            }
+
+            const key = item.slice(0, eq);
+            const value = decode(
+                item.slice(eq + 1),
+            );
+
+            if (!allowed.has(key)) {
+                throw new Error(
+                    `Unsupported XHTTP query key: ${key}`,
+                );
+            }
+
+            if (
+                Object.prototype.hasOwnProperty.call(
+                    params,
+                    key,
+                )
+            ) {
+                throw new Error(
+                    `Duplicate XHTTP query key: ${key}`,
+                );
+            }
+
+            params[key] = value;
+        }
+
+        const required = [
+            'v',
+            'cipher',
+            'udp',
+            'uot',
+            'uot-version',
+            'padding',
+            'e',
+            'fake-tcp',
+            'fake-udp',
+        ];
+
+        for (const key of required) {
+            if (
+                !Object.prototype.hasOwnProperty.call(
+                    params,
+                    key,
+                )
+            ) {
+                throw new Error(
+                    `Missing XHTTP query key: ${key}`,
+                );
+            }
+        }
+
+        if (params.v !== '1') {
+            throw new Error(
+                `Unsupported XHTTP URI version: ${params.v}`,
+            );
+        }
+
+        if (!/^[012]$/.test(params['uot-version'])) {
+            throw new Error(
+                'Invalid XHTTP uot-version',
+            );
+        }
+
+        if (!password || !server || !params.cipher) {
+            throw new Error(
+                'Incomplete HeySocks XHTTP URI',
+            );
+        }
+
+        return {
+            type: 'xhttp',
+            name: decode(fragment),
+            server,
+            port,
+            password,
+            cipher: params.cipher,
+            udp: parseFlag(
+                params.udp,
+                'udp',
+            ),
+            'udp-over-tcp': parseFlag(
+                params.uot,
+                'uot',
+            ),
+            'udp-over-tcp-version':
+                Number(params['uot-version']),
+            'padding-len':
+                params.padding,
+            e: parseFlag(
+                params.e,
+                'e',
+            ),
+            h: params.h || '',
+            'fake-net': {
+                tcp: params['fake-tcp'],
+                udp: params['fake-udp'],
+            },
+        };
+    };
+
+    return {
+        name,
+        test,
+        parse,
+    };
+}
+
 // Parse SS URI format (only supports new SIP002, legacy format is depreciated).
 // reference: https://github.com/shadowsocks/shadowsocks-org/wiki/SIP002-URI-Scheme
 function URI_SS() {
@@ -3385,6 +3648,7 @@ function isIP(ip) {
 export default [
     URI_PROXY(),
     URI_SOCKS(),
+    URI_XHTTP(),
     URI_SS(),
     URI_SSR(),
     URI_VMess(),

@@ -797,6 +797,199 @@ function vless(proxy) {
     )}`;
 }
 
+
+// Strict RFC3986 encoder used by HeySocks proprietary XHTTP URI v1.
+// Spaces become %20, never "+".
+function encodeXHTTPComponent(value) {
+    return encodeURIComponent(
+        String(value),
+    ).replace(
+        /[!'()*]/g,
+        (char) =>
+            `%${char
+                .charCodeAt(0)
+                .toString(16)
+                .toUpperCase()}`,
+    );
+}
+
+function encodeXHTTPFlag(value, field) {
+    if (
+        value === true ||
+        value === 1 ||
+        value === '1'
+    ) {
+        return '1';
+    }
+
+    if (
+        value === false ||
+        value === 0 ||
+        value === '0'
+    ) {
+        return '0';
+    }
+
+    throw new Error(
+        `Invalid HeySocks XHTTP ${field}: expected boolean or 0/1`,
+    );
+}
+
+function produceHeySocksXHTTPURI(proxy) {
+    const rawServer =
+        String(proxy.server ?? '');
+
+    const server =
+        rawServer.replace(
+            /^\[|\]$/g,
+            '',
+        );
+
+    const port =
+        Number(proxy.port);
+
+    const password =
+        String(proxy.password ?? '');
+
+    const cipher =
+        String(proxy.cipher ?? '');
+
+    const padding =
+        String(
+            proxy['padding-len'] ?? '',
+        );
+
+    if (!server) {
+        throw new Error(
+            'HeySocks XHTTP URI requires server',
+        );
+    }
+
+    if (
+        !Number.isInteger(port) ||
+        port < 1 ||
+        port > 65535
+    ) {
+        throw new Error(
+            'HeySocks XHTTP URI requires valid port',
+        );
+    }
+
+    if (!password) {
+        throw new Error(
+            'HeySocks XHTTP URI requires password',
+        );
+    }
+
+    if (!cipher) {
+        throw new Error(
+            'HeySocks XHTTP URI requires cipher',
+        );
+    }
+
+    if (!padding) {
+        throw new Error(
+            'HeySocks XHTTP URI requires padding-len',
+        );
+    }
+
+    const uotVersion =
+        Number(
+            proxy['udp-over-tcp-version'],
+        );
+
+    if (
+        !Number.isInteger(uotVersion) ||
+        uotVersion < 0 ||
+        uotVersion > 2
+    ) {
+        throw new Error(
+            'HeySocks XHTTP URI requires udp-over-tcp-version 0, 1 or 2',
+        );
+    }
+
+    const udp = encodeXHTTPFlag(
+        proxy.udp,
+        'udp',
+    );
+
+    const uot = encodeXHTTPFlag(
+        proxy['udp-over-tcp'],
+        'udp-over-tcp',
+    );
+
+    const e = encodeXHTTPFlag(
+        proxy.e,
+        'e',
+    );
+
+    const h =
+        String(proxy.h ?? '');
+
+    const fakeTcp =
+        String(
+            proxy['fake-net']?.tcp ?? '',
+        );
+
+    const fakeUdp =
+        String(
+            proxy['fake-net']?.udp ?? '',
+        );
+
+    const nodeName =
+        String(proxy.name ?? '');
+
+    // IPv6 authority must use brackets.
+    const authorityHost =
+        server.includes(':')
+            ? `[${server}]`
+            : server;
+
+    // Canonical v1 query order is fixed.
+    // DO NOT sort.
+    const query = [
+        'v=1',
+        `cipher=${encodeXHTTPComponent(cipher)}`,
+        `udp=${udp}`,
+        `uot=${uot}`,
+        `uot-version=${uotVersion}`,
+        `padding=${encodeXHTTPComponent(padding)}`,
+        `e=${e}`,
+    ];
+
+    // Empty H is omitted in canonical v1.
+    if (h !== '') {
+        query.push(
+            `h=${encodeXHTTPComponent(h)}`,
+        );
+    }
+
+    // These two keys always exist,
+    // even when the values are empty.
+    query.push(
+        `fake-tcp=${encodeXHTTPComponent(
+            fakeTcp,
+        )}`,
+    );
+
+    query.push(
+        `fake-udp=${encodeXHTTPComponent(
+            fakeUdp,
+        )}`,
+    );
+
+    return (
+        `xhttp://${encodeXHTTPComponent(
+            password,
+        )}` +
+        `@${authorityHost}:${port}` +
+        `?${query.join('&')}` +
+        `#${encodeXHTTPComponent(
+            nodeName,
+        )}`
+    );
+}
+
 export default function URI_Producer() {
     const type = 'SINGLE';
     const produce = (proxy) => {
@@ -837,6 +1030,10 @@ export default function URI_Producer() {
                     ),
                 )}@${proxy.server}:${proxy.port}#${proxy.name}`;
                 break;
+            case 'xhttp':
+                result = produceHeySocksXHTTPURI(proxy);
+                break;
+
             case 'ss':
                 const userinfo = `${proxy.cipher}:${proxy.password}`;
                 result = `ss://${
