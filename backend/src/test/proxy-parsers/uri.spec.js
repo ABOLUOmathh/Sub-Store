@@ -900,6 +900,63 @@ describe('HeySocks proprietary XHTTP URI v1', function () {
         expect(reparsed).to.deep.equal(proxy);
     });
 
+    it('defaults a missing structured UOT version to canonical version 0', function () {
+        const proxy = {
+            type: 'xhttp',
+            name: 'Native HeySocks Shape',
+            server: 'example.com',
+            port: 443,
+            password: 'secret',
+            cipher: 'aes-128-ctr',
+            udp: true,
+            'udp-over-tcp': true,
+            'padding-len': '8-64',
+            e: true,
+            h: '',
+            'fake-net': {
+                tcp: 'tcp-token',
+                udp: 'udp-token',
+            },
+        };
+
+        const encoded =
+            ProxyUtils.produce(
+                [proxy],
+                'URI',
+                'external',
+            ).trim();
+
+        expect(encoded).to.equal(
+            'xhttp://secret@example.com:443' +
+            '?v=1' +
+            '&cipher=aes-128-ctr' +
+            '&udp=1' +
+            '&uot=1' +
+            '&uot-version=0' +
+            '&padding=8-64' +
+            '&e=1' +
+            '&fake-tcp=tcp-token' +
+            '&fake-udp=udp-token' +
+            '#Native%20HeySocks%20Shape',
+        );
+
+        const reparsed =
+            ProxyUtils.parse(encoded)[0];
+
+        expect(
+            reparsed['udp-over-tcp-version'],
+        ).to.equal(0);
+
+        expect(reparsed.e).to.equal(true);
+
+        expect(
+            reparsed['fake-net'],
+        ).to.deep.equal({
+            tcp: 'tcp-token',
+            udp: 'udp-token',
+        });
+    });
+
     it('keeps non-empty h in canonical position', function () {
         const uri =
             'xhttp://secret@example.com:443' +

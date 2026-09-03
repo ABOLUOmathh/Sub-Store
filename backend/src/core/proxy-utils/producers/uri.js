@@ -893,12 +893,19 @@ function produceHeySocksXHTTPURI(proxy) {
         );
     }
 
+    const rawUotVersion =
+        proxy['udp-over-tcp-version'];
+
+    // Native HeySocks configs may omit this field.
+    // Mihomo decodes the missing Go int field as zero,
+    // so canonical URI v1 must make that zero explicit.
     const uotVersion =
-        Number(
-            proxy['udp-over-tcp-version'],
-        );
+        rawUotVersion == null
+            ? 0
+            : Number(rawUotVersion);
 
     if (
+        rawUotVersion === '' ||
         !Number.isInteger(uotVersion) ||
         uotVersion < 0 ||
         uotVersion > 2
