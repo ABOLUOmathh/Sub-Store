@@ -2791,6 +2791,7 @@ function Clash_All() {
                 'trojan',
                 'tuic',
                 'vless',
+                'xhttp',
                 'hysteria',
                 'hysteria2',
                 'wireguard',
