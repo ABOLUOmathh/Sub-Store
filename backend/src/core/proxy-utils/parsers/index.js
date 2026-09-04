@@ -3017,12 +3017,24 @@ function URI_Trojan() {
     };
 
     const parse = (line) => {
-        const matched = /^(trojan:\/\/.*?@.*?)(:(\d+))?\/?(\?.*?)?$/.exec(line);
-        const port = matched?.[2];
-        if (!port) {
-            line = line.replace(matched[1], `${matched[1]}:443`);
-        }
         let [newLine, name] = line.split(/#(.+)/, 2);
+
+        const matched =
+            /^(trojan:\/\/.*?@.*?)(:(\d+))?\/?(\?.*?)?$/.exec(newLine);
+
+        if (!matched) {
+            throw new Error('Invalid trojan url');
+        }
+
+        const port = matched?.[2];
+
+        if (!port) {
+            newLine = newLine.replace(
+                matched[1],
+                `${matched[1]}:443`,
+            );
+        }
+
         const parser = getTrojanURIParser();
         const proxy = parser.parse(newLine);
         if (isNotBlank(name)) {
