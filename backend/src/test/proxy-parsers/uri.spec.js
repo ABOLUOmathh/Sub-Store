@@ -812,6 +812,138 @@ describe('Proxy URI parser coverage', function () {
     });
 });
 
+describe('HeySocks proprietary OneSocks URI v1', function () {
+    const canonical =
+        'os://p%20a%2Bs%2F%21@os.example.com:5601' +
+        '?v=1' +
+        '&udp=1' +
+        '&uot=1' +
+        '&padding=8-64' +
+        '&e=1' +
+        '#space%20%2B%20plus';
+
+    it('parses canonical OneSocks fields without inventing optional fields', function () {
+        const proxy = ProxyUtils.parse(canonical)[0];
+
+        expect(proxy.type).to.equal('os');
+        expect(proxy.name).to.equal('space + plus');
+        expect(proxy.server).to.equal('os.example.com');
+        expect(proxy.port).to.equal(5601);
+        expect(proxy.password).to.equal('p a+s/!');
+        expect(proxy['padding-len']).to.equal('8-64');
+        expect(proxy.e).to.equal(true);
+        expect(proxy.udp).to.equal(true);
+        expect(proxy['udp-over-tcp']).to.equal(true);
+
+        expect(proxy).to.not.have.property('cipher');
+        expect(proxy).to.not.have.property('udp-over-tcp-version');
+    });
+
+    it('produces canonical URI and round-trips special characters', function () {
+        const proxy = {
+            type: 'os',
+            name: 'space + plus',
+            server: 'os.example.com',
+            port: 5601,
+            password: 'p a+s/!',
+            'padding-len': '8-64',
+            e: true,
+            udp: true,
+            'udp-over-tcp': true,
+        };
+
+        const encoded = ProxyUtils.produce([proxy], 'URI', 'external').trim();
+
+        expect(encoded).to.equal(canonical);
+
+        const reparsed = ProxyUtils.parse(encoded)[0];
+
+        expect(reparsed.password).to.equal('p a+s/!');
+        expect(reparsed.name).to.equal('space + plus');
+        expect(reparsed).to.not.have.property('cipher');
+        expect(reparsed).to.not.have.property('udp-over-tcp-version');
+    });
+
+    it('preserves explicit cipher and UOT version', function () {
+        const proxy = {
+            type: 'os',
+            name: 'Explicit OneSocks',
+            server: 'example.com',
+            port: 443,
+            password: 'secret',
+            cipher: 'aes-256-ctr',
+            udp: true,
+            'udp-over-tcp': true,
+            'udp-over-tcp-version': 2,
+            'padding-len': '8-64',
+            e: false,
+        };
+
+        const encoded = ProxyUtils.produce([proxy], 'URI', 'external').trim();
+
+        expect(encoded).to.equal(
+            'os://secret@example.com:443' +
+                '?v=1' +
+                '&cipher=aes-256-ctr' +
+                '&udp=1' +
+                '&uot=1' +
+                '&uot-version=2' +
+                '&padding=8-64' +
+                '&e=0' +
+                '#Explicit%20OneSocks',
+        );
+
+        const reparsed = ProxyUtils.parse(encoded)[0];
+
+        expect(reparsed.cipher).to.equal('aes-256-ctr');
+        expect(reparsed['udp-over-tcp-version']).to.equal(2);
+    });
+
+    it('supports bracketed IPv6 authority', function () {
+        const proxy = {
+            type: 'os',
+            name: 'IPv6 OneSocks',
+            server: '2001:db8::1',
+            port: 5601,
+            password: 'secret',
+            udp: true,
+            'udp-over-tcp': false,
+            'padding-len': '8-64',
+            e: true,
+        };
+
+        const encoded = ProxyUtils.produce([proxy], 'URI', 'external').trim();
+
+        expect(encoded).to.include('@[2001:db8::1]:5601?');
+
+        const reparsed = ProxyUtils.parse(encoded)[0];
+
+        expect(reparsed.server).to.equal('2001:db8::1');
+        expect(reparsed.port).to.equal(5601);
+    });
+
+    it('emits Mihomo type:os fields from an os URI', function () {
+        const proxy = ProxyUtils.parse(canonical)[0];
+
+        const output = ProxyUtils.produce([proxy], 'Mihomo', 'external');
+
+        const YAML = require('yaml');
+        const out = YAML.parse(output).proxies[0];
+
+        expect(out.type).to.equal('os');
+        expect(out.server).to.equal('os.example.com');
+        expect(out.port).to.equal(5601);
+        expect(out.password).to.equal('p a+s/!');
+        expect(out['padding-len']).to.equal('8-64');
+        expect(out.e).to.equal(true);
+        expect(out.udp).to.equal(true);
+        expect(out['udp-over-tcp']).to.equal(true);
+
+        expect(out).to.not.have.property('cipher');
+        expect(out).to.not.have.property('udp-over-tcp-version');
+    });
+});
+
 describe('HeySocks proprietary XHTTP URI v1', function () {
     const canonical =
         'xhttp://abc%3A03010203@xhttp.example.com:443' +
