@@ -733,8 +733,195 @@ function URI_XHTTP() {
     };
 }
 
+// Parse HeySocks proprietary OneSocks canonical URI v1.
+function URI_OS() {
+    const name = 'URI HeySocks OneSocks Parser';
+
+    const test = (line) => {
+        return /^os:\/\//.test(line);
+    };
+
+    const decode = (value) => {
+        // Strict URI component semantics:
+        // literal "+" remains "+", never becomes a space.
+        return decodeURIComponent(value);
+    };
+
+    const parseFlag = (value, field) => {
+        if (value === '0') {
+            return false;
+        }
+
+        if (value === '1') {
+            return true;
+        }
+
+        throw new Error(`Invalid HeySocks OneSocks ${field}: expected 0 or 1`);
+    };
+
+    const parse = (line) => {
+        const prefix = 'os://';
+
+        let body = line.slice(prefix.length);
+
+        let fragment = '';
+        const hash = body.indexOf('#');
+
+        if (hash !== -1) {
+            fragment = body.slice(hash + 1);
+            body = body.slice(0, hash);
+        }
+
+        const queryIndex = body.indexOf('?');
+
+        if (queryIndex === -1) {
+            throw new Error('HeySocks OneSocks query is required');
+        }
+
+        const authorityPart = body.slice(0, queryIndex);
+        const queryString = body.slice(queryIndex + 1);
+
+        const at = authorityPart.lastIndexOf('@');
+
+        if (at <= 0) {
+            throw new Error('HeySocks OneSocks password is required');
+        }
+
+        const password = decode(authorityPart.slice(0, at));
+        const authority = authorityPart.slice(at + 1);
+
+        let server;
+        let portRaw;
+
+        if (authority.startsWith('[')) {
+            const close = authority.indexOf(']');
+
+            if (close <= 1 || authority[close + 1] !== ':') {
+                throw new Error('Invalid HeySocks OneSocks IPv6 authority');
+            }
+
+            server = authority.slice(1, close);
+            portRaw = authority.slice(close + 2);
+        } else {
+            const colon = authority.lastIndexOf(':');
+
+            if (colon <= 0) {
+                throw new Error('Invalid HeySocks OneSocks authority');
+            }
+
+            server = authority.slice(0, colon);
+            portRaw = authority.slice(colon + 1);
+
+            if (server.includes(':')) {
+                throw new Error('HeySocks OneSocks IPv6 must use brackets');
+            }
+        }
+
+        if (!/^\d+$/.test(portRaw)) {
+            throw new Error('Invalid HeySocks OneSocks port');
+        }
+
+        const port = Number(portRaw);
+
+        if (port < 1 || port > 65535) {
+            throw new Error('Invalid HeySocks OneSocks port range');
+        }
+
+        const params = {};
+        const allowed = new Set([
+            'v',
+            'cipher',
+            'udp',
+            'uot',
+            'uot-version',
+            'padding',
+            'e',
+        ]);
+
+        for (const item of queryString.split('&')) {
+            if (!item) {
+                continue;
+            }
+
+            const eq = item.indexOf('=');
+
+            if (eq === -1) {
+                throw new Error(`Invalid OneSocks query item: ${item}`);
+            }
+
+            const key = item.slice(0, eq);
+            const value = decode(item.slice(eq + 1));
+
+            if (!allowed.has(key)) {
+                throw new Error(`Unsupported OneSocks query key: ${key}`);
+            }
+
+            if (Object.prototype.hasOwnProperty.call(params, key)) {
+                throw new Error(`Duplicate OneSocks query key: ${key}`);
+            }
+
+            params[key] = value;
+        }
+
+        const required = ['v', 'udp', 'uot', 'padding', 'e'];
+
+        for (const key of required) {
+            if (!Object.prototype.hasOwnProperty.call(params, key)) {
+                throw new Error(`Missing OneSocks query key: ${key}`);
+            }
+        }
+
+        if (params.v !== '1') {
+            throw new Error(`Unsupported OneSocks URI version: ${params.v}`);
+        }
+
+        if (!password || !server || !params.padding) {
+            throw new Error('Incomplete HeySocks OneSocks URI');
+        }
+
+        if (
+            Object.prototype.hasOwnProperty.call(params, 'cipher') &&
+            !params.cipher
+        ) {
+            throw new Error('Invalid OneSocks cipher');
+        }
+
+        if (
+            Object.prototype.hasOwnProperty.call(params, 'uot-version') &&
+            !/^[012]$/.test(params['uot-version'])
+        ) {
+            throw new Error('Invalid OneSocks uot-version');
+        }
+
+        const proxy = {
+            type: 'os',
+            name: decode(fragment),
+            server,
+            port,
+            password,
+            udp: parseFlag(params.udp, 'udp'),
+            'udp-over-tcp': parseFlag(params.uot, 'uot'),
+            'padding-len': params.padding,
+            e: parseFlag(params.e, 'e'),
+        };
+
+        if (Object.prototype.hasOwnProperty.call(params, 'cipher')) {
+            proxy.cipher = params.cipher;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(params, 'uot-version')) {
+            proxy['udp-over-tcp-version'] = Number(params['uot-version']);
+        }
+
+        return proxy;
+    };
+
+    return { name, test, parse };
+}
+
 // Parse SS URI format (only supports new SIP002, legacy format is depreciated).
 // reference: https://github.com/shadowsocks/shadowsocks-org/wiki/SIP002-URI-Scheme
+
 function URI_SS() {
     const name = 'URI SS Parser';
     const test = (line) => {
@@ -3658,6 +3845,7 @@ export default [
     URI_PROXY(),
     URI_SOCKS(),
     URI_XHTTP(),
+    URI_OS(),
     URI_SS(),
     URI_SSR(),
     URI_VMess(),

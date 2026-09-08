@@ -997,6 +997,107 @@ function produceHeySocksXHTTPURI(proxy) {
     );
 }
 
+function encodeOneSocksFlag(value, field) {
+    if (value === true || value === 1 || value === '1') {
+        return '1';
+    }
+
+    if (value === false || value === 0 || value === '0') {
+        return '0';
+    }
+
+    throw new Error(
+        `Invalid HeySocks OneSocks ${field}: expected boolean or 0/1`,
+    );
+}
+
+function produceHeySocksOneSocksURI(proxy) {
+    const rawServer = String(proxy.server ?? '');
+    const server = rawServer.replace(/^\[|\]$/g, '');
+    const port = Number(proxy.port);
+    const password = String(proxy.password ?? '');
+    const padding = String(proxy['padding-len'] ?? '');
+
+    if (!server) {
+        throw new Error('HeySocks OneSocks URI requires server');
+    }
+
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error('HeySocks OneSocks URI requires valid port');
+    }
+
+    if (!password) {
+        throw new Error('HeySocks OneSocks URI requires password');
+    }
+
+    if (!padding) {
+        throw new Error('HeySocks OneSocks URI requires padding-len');
+    }
+
+    const udp = encodeOneSocksFlag(proxy.udp, 'udp');
+    const uot = encodeOneSocksFlag(proxy['udp-over-tcp'], 'udp-over-tcp');
+    const e = encodeOneSocksFlag(proxy.e, 'e');
+
+    const hasCipher = Object.prototype.hasOwnProperty.call(proxy, 'cipher');
+
+    const cipher = hasCipher ? String(proxy.cipher ?? '') : '';
+
+    if (hasCipher && !cipher) {
+        throw new Error('HeySocks OneSocks URI has empty cipher');
+    }
+
+    const hasUotVersion = Object.prototype.hasOwnProperty.call(
+        proxy,
+        'udp-over-tcp-version',
+    );
+
+    let uotVersion;
+
+    if (hasUotVersion) {
+        if (proxy['udp-over-tcp-version'] === '') {
+            throw new Error(
+                'HeySocks OneSocks URI has empty udp-over-tcp-version',
+            );
+        }
+
+        uotVersion = Number(proxy['udp-over-tcp-version']);
+
+        if (!Number.isInteger(uotVersion) || uotVersion < 0 || uotVersion > 2) {
+            throw new Error(
+                'HeySocks OneSocks URI requires udp-over-tcp-version 0, 1 or 2',
+            );
+        }
+    }
+
+    const authorityHost = server.includes(':') ? `[${server}]` : server;
+
+    // Canonical OneSocks v1 query order.
+    // Optional fields are emitted only when
+    // explicitly present in the source object.
+    const query = ['v=1'];
+
+    if (hasCipher) {
+        query.push(`cipher=${encodeXHTTPComponent(cipher)}`);
+    }
+
+    query.push(`udp=${udp}`, `uot=${uot}`);
+
+    if (hasUotVersion) {
+        query.push(`uot-version=${uotVersion}`);
+    }
+
+    query.push(`padding=${encodeXHTTPComponent(padding)}`, `e=${e}`);
+
+    const nodeName = String(proxy.name ?? '');
+
+    return (
+        `os://${encodeXHTTPComponent(password)}` +
+        `@${authorityHost}:${port}` +
+        `?${query.join('&')}` +
+        `#${encodeXHTTPComponent(nodeName)}`
+    );
+}
+
 export default function URI_Producer() {
     const type = 'SINGLE';
     const produce = (proxy) => {
@@ -1039,6 +1140,10 @@ export default function URI_Producer() {
                 break;
             case 'xhttp':
                 result = produceHeySocksXHTTPURI(proxy);
+                break;
+
+            case 'os':
+                result = produceHeySocksOneSocksURI(proxy);
                 break;
 
             case 'ss':
