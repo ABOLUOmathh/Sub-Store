@@ -146,6 +146,44 @@ describe('Proxy structured producers', function () {
         );
     });
 
+    it('parses and emits HeySocks OneSocks fields for Mihomo', function () {
+        const expected = {
+            type: 'os',
+            name: 'HeySocks OneSocks',
+            server: 'os.example.com',
+            port: 443,
+            password: 'test-password',
+            'padding-len': '8-64',
+            e: false,
+            udp: true,
+            'udp-over-tcp': true,
+        };
+
+        // Exercise the real full Clash YAML subscription path.
+        const [proxy] = ProxyUtils.parse(`proxies:
+  - name: HeySocks OneSocks
+    type: os
+    server: os.example.com
+    port: 443
+    password: test-password
+    padding-len: 8-64
+    e: false
+    udp: true
+    udp-over-tcp: true`);
+
+        expectSubset(proxy, expected);
+
+        const output = loadProducedYaml('Mihomo', proxy).proxies;
+
+        expect(output).to.have.length(1);
+        expectSubset(output[0], expected);
+
+        // Native v505 records omit these fields. Sub-Store must
+        // preserve that fact instead of inventing defaults.
+        expect(output[0]).to.not.have.property('cipher');
+        expect(output[0]).to.not.have.property('udp-over-tcp-version');
+    });
+
     it('filters unsupported Clash proxies by default and normalizes vmess ws early data', function () {
         const proxies = [
             {

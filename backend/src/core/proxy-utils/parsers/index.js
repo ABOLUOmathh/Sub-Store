@@ -3090,6 +3090,7 @@ function Clash_All() {
                 'tuic',
                 'vless',
                 'xhttp',
+                'os',
                 'hysteria',
                 'hysteria2',
                 'wireguard',
