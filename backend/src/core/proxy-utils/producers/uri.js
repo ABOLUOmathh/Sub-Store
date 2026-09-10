@@ -554,6 +554,44 @@ function buildVlessExtra(proxy) {
         : '';
 }
 
+function encodeHeySocksVlessFlag(value, field) {
+    const normalized =
+        typeof value === 'string' ? value.trim().toLowerCase() : value;
+
+    if (
+        normalized === true ||
+        normalized === 1 ||
+        normalized === '1' ||
+        normalized === 'true'
+    ) {
+        return '1';
+    }
+
+    if (
+        normalized === false ||
+        normalized === 0 ||
+        normalized === '0' ||
+        normalized === 'false'
+    ) {
+        return '0';
+    }
+
+    throw new Error(
+        `Invalid HeySocks VLESS ${field}: expected boolean or 0/1`,
+    );
+}
+
+function encodeHeySocksVlessH(value) {
+    if (
+        typeof value !== 'string' ||
+        !/^(?:[0-9a-fA-F]{2})+$/.test(value)
+    ) {
+        throw new Error('Invalid HeySocks VLESS h: expected hex bytes');
+    }
+
+    return encodeURIComponent(value);
+}
+
 function vless(proxy) {
     let security = 'none';
     const isReality = proxy['reality-opts'];
@@ -635,6 +673,17 @@ function vless(proxy) {
     if (proxy.flow) {
         flow = `&flow=${encodeURIComponent(proxy.flow)}`;
     }
+
+    let heySocksE = '';
+    if (Object.prototype.hasOwnProperty.call(proxy, 'e')) {
+        heySocksE = `&e=${encodeHeySocksVlessFlag(proxy.e, 'e')}`;
+    }
+
+    let heySocksH = '';
+    if (Object.prototype.hasOwnProperty.call(proxy, 'h')) {
+        heySocksH = `&h=${encodeHeySocksVlessH(proxy.h)}`;
+    }
+
     let extra = '';
     const extraPayload = buildVlessExtra(proxy);
     if (extraPayload) {
@@ -792,7 +841,7 @@ function vless(proxy) {
         proxy.port
     }?security=${encodeURIComponent(
         security,
-    )}${vlessTransport}${packetEncoding}${alpn}${allowInsecure}${pcs}${vcn}${ech}${h2}${sni}${fp}${flow}${sid}${spx}${pbk}${mode}${extra}${fm}${pqv}${encryption}#${encodeURIComponent(
+    )}${vlessTransport}${packetEncoding}${alpn}${allowInsecure}${pcs}${vcn}${ech}${h2}${sni}${fp}${flow}${heySocksE}${heySocksH}${sid}${spx}${pbk}${mode}${extra}${fm}${pqv}${encryption}#${encodeURIComponent(
         proxy.name,
     )}`;
 }
