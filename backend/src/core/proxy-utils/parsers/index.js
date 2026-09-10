@@ -2574,6 +2574,36 @@ function URI_VLESS() {
         proxy['name-cert-verify'] = proxy._vcn?.[0];
         proxy._h2 = /(TRUE)|1/i.test(params.h2);
 
+        // HeySocks VLESS compatibility extension.
+        //
+        // `e` and `h` are independent fields. Keep them absent for
+        // ordinary VLESS URIs so legacy parsing remains unchanged.
+        if (Object.prototype.hasOwnProperty.call(params, 'e')) {
+            const e = `${params.e}`.trim().toLowerCase();
+
+            if (e === '1' || e === 'true') {
+                proxy.e = true;
+            } else if (e === '0' || e === 'false') {
+                proxy.e = false;
+            } else {
+                throw new Error(
+                    `Invalid HeySocks VLESS e value: ${params.e}`,
+                );
+            }
+        }
+
+        if (Object.prototype.hasOwnProperty.call(params, 'h')) {
+            const h = params.h;
+
+            // Match Mihomo's hex-decoding requirement without imposing
+            // a fixed HeySocks v505 length or prefix.
+            if (!/^(?:[0-9a-fA-F]{2})+$/.test(h)) {
+                throw new Error('Invalid HeySocks VLESS h: expected hex bytes');
+            }
+
+            proxy.h = h;
+        }
+
         switch (`${params.packetEncoding || ''}`.trim().toLowerCase()) {
             case 'none':
                 proxy['packet-encoding'] = '';
