@@ -10,7 +10,7 @@ on:
       source_ref:
         description: "Custom source branch or commit to release"
         required: true
-        default: "release/sub-store-2.41.0-custom.1"
+        default: "custom-release/sub-store-2.41.0-custom.1"
         type: string
       mihomo_ua_version:
         description: "Pinned Mihomo fallback User-Agent version"
