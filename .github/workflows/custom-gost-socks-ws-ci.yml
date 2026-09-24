@@ -1,0 +1,131 @@
+name: Custom GOST SOCKS WebSocket CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "sync/**"
+      - "release/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: custom-gost-socks-ws-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Custom GOST SOCKS WebSocket tests
+    runs-on: ubuntu-latest
+
+    env:
+      MIHOMO_UA_VERSION: v1.19.31-custom.1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: ".node-version"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pnpm install --frozen-lockfile
+
+      - name: Pin Mihomo fallback User-Agent
+        working-directory: backend
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+
+          const version = process.env.MIHOMO_UA_VERSION;
+
+          if (!/^v?\d+\.\d+\.\d+(?:-custom\.[1-9]\d*)?$/.test(version)) {
+              throw new Error(`Invalid MIHOMO_UA_VERSION: ${version}`);
+          }
+
+          const files = [
+              'src/utils/download.js',
+              'src/utils/flow.js',
+          ];
+
+          let replacements = 0;
+
+          for (const file of files) {
+              const source = fs.readFileSync(file, 'utf8');
+
+              const next = source.replace(
+                  /clash\.meta\/[^"']+/g,
+                  () => {
+                      replacements += 1;
+                      return `clash.meta/${version}`;
+                  },
+              );
+
+              if (next === source) {
+                  throw new Error(`No Mihomo User-Agent updated in ${file}`);
+              }
+
+              fs.writeFileSync(file, next);
+          }
+
+          if (replacements !== 2) {
+              throw new Error(
+                  `Expected exactly 2 Mihomo User-Agent replacements, got ${replacements}`,
+              );
+          }
+
+          console.log(
+              `Pinned ${replacements} Mihomo User-Agent strings to ${version}`,
+          );
+          NODE
+
+      - name: Run custom regression tests
+        working-directory: backend
+        run: |
+          pnpm exec mocha \
+            src/test/proxy-parsers/socks-gost-uri.spec.js \
+            src/test/proxy-parsers/heysocks-vless-eh.spec.js \
+            src/test/custom-trojan-name.spec.js \
+            src/test/proxy-parsers/uri.spec.js \
+            src/test/proxy-producers/structured.spec.js \
+            --require @babel/register
+
+      - name: Run full test suite
+        working-directory: backend
+        run: pnpm test
+
+      - name: Build backend bundle
+        working-directory: backend
+        run: pnpm bundle:esbuild
+
+      - name: Verify bundle
+        run: |
+          BACKEND_VERSION="$(
+            node -p "require('./backend/package.json').version"
+          )"
+
+          test -s backend/dist/sub-store.bundle.js
+
+          grep -F \
+            "unsupported GOST SOCKS route" \
+            backend/dist/sub-store.bundle.js \
+            >/dev/null
+
+          grep -F \
+            "SUB_STORE_BACKEND_VERSION: ${BACKEND_VERSION}" \
+            backend/dist/sub-store.bundle.js \
+            >/dev/null
+
+          grep -F \
+            "clash.meta/${MIHOMO_UA_VERSION}" \
+            backend/dist/sub-store.bundle.js \
+            >/dev/null
+
+          node --check backend/dist/sub-store.bundle.js
