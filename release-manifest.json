@@ -1,0 +1,15 @@
+{
+  "releaseVersion": "2.41.0-custom.2",
+  "upstreamBase": "2.41.0",
+  "sourceCommit": "9bbbe9185113ad70e891d0d5cb491765dc302a4b",
+  "mihomoFallbackUserAgentVersion": "v1.19.31-custom.1",
+  "runtimeAssets": [
+    "sub-store.min.js",
+    "sub-store-0.min.js",
+    "sub-store-1.min.js",
+    "sub-store-parser.loon.min.js",
+    "cron-sync-artifacts.min.js",
+    "proxy-utils.esm.mjs",
+    "sub-store.bundle.js"
+  ]
+}
