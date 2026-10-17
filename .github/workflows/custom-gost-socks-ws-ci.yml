@@ -95,6 +95,7 @@ jobs:
             src/test/custom-trojan-name.spec.js \
             src/test/proxy-parsers/uri.spec.js \
             src/test/proxy-producers/structured.spec.js \
+            src/test/proxy-producers/heysocks-singbox.spec.js \
             --require @babel/register
 
       - name: Run full test suite
