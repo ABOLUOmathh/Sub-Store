@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Immutable release version, e.g. 2.41.0-custom.1"
+        description: "Immutable release version, e.g. 2.42.6-custom.1"
         required: true
         type: string
       source_ref:
         description: "Custom source branch or commit to release"
         required: true
-        default: "custom-release/sub-store-2.41.0-custom.2"
+        default: "custom-release/sub-store-2.42.6-custom.1"
         type: string
       mihomo_ua_version:
         description: "Pinned Mihomo fallback User-Agent version"
@@ -536,4 +536,4 @@ jobs:
             --target "${SOURCE_SHA}" \
             --title "Sub-Store ${RELEASE_VERSION}" \
             --notes-file release-notes.md \
-            --prerelease
+            --latest
