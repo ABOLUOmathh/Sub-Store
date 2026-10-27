@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      MIHOMO_UA_VERSION: v1.19.31-custom.1
+      MIHOMO_UA_VERSION: v1.19.33-custom.1
 
     steps:
       - name: Checkout
