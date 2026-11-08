@@ -390,6 +390,13 @@ const tlsParser = (proxy, parsedProxy) => {
             parsedProxy.tls.reality.short_id =
                 proxy['reality-opts']['short-id'];
         parsedProxy.tls.utls = { enabled: true };
+        parsedProxy.tls.disable_x25519_mlkem768 = true;
+    }
+    if (
+        proxy.disable_x25519_mlkem768 ||
+        proxy['disable-x25519-mlkem768']
+    ) {
+        parsedProxy.tls.disable_x25519_mlkem768 = true;
     }
     if (
         !['hysteria', 'hysteria2', 'tuic'].includes(proxy.type) &&
@@ -917,6 +924,94 @@ const vlessParser = (proxy = {}) => {
     detourParser(proxy, parsedProxy);
     smuxParser(proxy.smux, parsedProxy);
     tlsParser(proxy, parsedProxy);
+    if (proxy.e != null) {
+        parsedProxy.e = Boolean(proxy.e);
+    }
+    if (proxy.h != null && proxy.h !== '') {
+        parsedProxy.h = String(proxy.h);
+    }
+    ipVersionParser(proxy, parsedProxy);
+    domainResolverParser(proxy, parsedProxy);
+    return parsedProxy;
+};
+
+const heysocksXHTTPParser = (proxy = {}) => {
+    const parsedProxy = {
+        tag: proxy.name,
+        type: 'heysocks-xhttp',
+        server: proxy.server,
+        server_port: parseInt(`${proxy.port}`, 10),
+        password: proxy.password,
+    };
+    if (parsedProxy.server_port < 0 || parsedProxy.server_port > 65535)
+        throw 'invalid port';
+    if (proxy.cipher) {
+        parsedProxy.cipher = proxy.cipher;
+    } else {
+        parsedProxy.cipher = 'aes-128-ctr';
+    }
+    if (proxy['padding-len']) {
+        parsedProxy.padding_len = proxy['padding-len'];
+    }
+    if (proxy.uot || proxy['udp-over-tcp']) {
+        parsedProxy.udp_over_tcp = true;
+    }
+    if (proxy.e != null) {
+        parsedProxy.e = Boolean(proxy.e);
+    }
+    if (proxy.h != null && proxy.h !== '') {
+        parsedProxy.h = String(proxy.h);
+    }
+    if (proxy['fake-net']) {
+        const tcpVal =
+            proxy['fake-net'].tcp || proxy['fake-net']['fake-tcp'] || '';
+        const udpVal =
+            proxy['fake-net'].udp || proxy['fake-net']['fake-udp'] || '';
+        parsedProxy.fake_net = {
+            'fake-tcp': tcpVal,
+            'fake-udp': udpVal,
+            tcp: tcpVal,
+            udp: udpVal,
+        };
+    }
+    networkParser(proxy, parsedProxy);
+    tfoParser(proxy, parsedProxy);
+    detourParser(proxy, parsedProxy);
+    ipVersionParser(proxy, parsedProxy);
+    domainResolverParser(proxy, parsedProxy);
+    return parsedProxy;
+};
+
+const onesocksParser = (proxy = {}) => {
+    const parsedProxy = {
+        tag: proxy.name,
+        type: 'onesocks',
+        server: proxy.server,
+        server_port: parseInt(`${proxy.port}`, 10),
+        password: proxy.password,
+    };
+    if (parsedProxy.server_port < 0 || parsedProxy.server_port > 65535)
+        throw 'invalid port';
+    if (proxy.cipher) {
+        parsedProxy.cipher = proxy.cipher;
+    } else {
+        parsedProxy.cipher = 'aes-128-ctr';
+    }
+    if (proxy['padding-len']) {
+        parsedProxy.padding_len = proxy['padding-len'];
+    }
+    if (proxy.uot || proxy['udp-over-tcp']) {
+        parsedProxy.udp_over_tcp = true;
+    }
+    if (proxy.e != null) {
+        parsedProxy.e = Boolean(proxy.e);
+    }
+    if (proxy.h != null && proxy.h !== '') {
+        parsedProxy.h = String(proxy.h);
+    }
+    networkParser(proxy, parsedProxy);
+    tfoParser(proxy, parsedProxy);
+    detourParser(proxy, parsedProxy);
     ipVersionParser(proxy, parsedProxy);
     domainResolverParser(proxy, parsedProxy);
     return parsedProxy;
@@ -1496,11 +1591,21 @@ export default function singbox_Producer() {
                             'Platform sing-box cannot replace AnyTLS TLS with ShadowTLS',
                         );
                     }
-                    if (['xhttp'].includes(proxy.network))
+                    if (
+                        proxy.type !== 'xhttp' &&
+                        ['xhttp'].includes(proxy.network)
+                    )
                         throw new Error(
                             `Platform sing-box does not support network: ${proxy.network}`,
                         );
                     switch (proxy.type) {
+                        case 'xhttp':
+                            list.push(heysocksXHTTPParser(proxy));
+                            break;
+                        case 'os':
+                        case 'onesocks':
+                            list.push(onesocksParser(proxy));
+                            break;
                         case 'ssh':
                             list.push(sshParser(proxy));
                             break;
