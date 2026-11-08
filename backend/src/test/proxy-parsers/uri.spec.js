@@ -652,6 +652,47 @@ describe('Proxy URI parser coverage', function () {
             });
         });
 
+        it('parses Trojan URIs with obfs-local plugin websocket transport', function () {
+            const proxy = parseOne(
+                'trojan://trojan-pass@vt-cow2-cn-11.bnmu1.com:40008?peer=vt-cow2-cn-11.bnmu1.com&plugin=obfs-local;obfs%3Dwebsocket;obfs-host%3D;obfs-uri%3D/dl_media#Trojan%20Obfs%20WS',
+            );
+
+            expectSubset(proxy, {
+                type: 'trojan',
+                name: 'Trojan Obfs WS',
+                server: 'vt-cow2-cn-11.bnmu1.com',
+                port: 40008,
+                password: 'trojan-pass',
+                sni: 'vt-cow2-cn-11.bnmu1.com',
+                network: 'ws',
+                'ws-opts': {
+                    path: '/dl_media',
+                },
+            });
+        });
+
+        it('parses Trojan URIs with v2ray-plugin options', function () {
+            const proxy = parseOne(
+                'trojan://trojan-pass@trojan-plugin.example.com:443?peer=trojan-plugin.example.com&plugin=v2ray-plugin;mode=websocket;host=plugin.example.com;path=/ws-plugin#Trojan%20V2Ray%20Plugin',
+            );
+
+            expectSubset(proxy, {
+                type: 'trojan',
+                name: 'Trojan V2Ray Plugin',
+                server: 'trojan-plugin.example.com',
+                port: 443,
+                password: 'trojan-pass',
+                sni: 'trojan-plugin.example.com',
+                network: 'ws',
+                'ws-opts': {
+                    path: '/ws-plugin',
+                    headers: {
+                        Host: 'plugin.example.com',
+                    },
+                },
+            });
+        });
+
         it('parses Trojan IPv6 URIs with valueless flags', function () {
             const proxy = parseOne(
                 'trojan://trojan-pass@[2001:db8::1]:443?udp&tfo&ws&wspath=%2Fws#Trojan%20IPv6',
