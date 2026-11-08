@@ -136,6 +136,70 @@ function parseTrojan(url) {
   }
 
 
+  if (params.plugin) {
+    const pluginStr = String(params.plugin);
+    const pluginItems = pluginStr.split(";");
+    const pluginParams = {};
+    for (const item of pluginItems) {
+      const sep = item.indexOf("=");
+      if (sep === -1) {
+        if (item) pluginParams[item] = true;
+        continue;
+      }
+      const k = item.slice(0, sep).trim();
+      const v = decode(item.slice(sep + 1)).replace(/\\=/g, "=").trim();
+      if (k) pluginParams[k] = v;
+    }
+
+    if (!proxy.sni && (pluginParams.peer || pluginParams.sni)) {
+      proxy.sni = pluginParams.sni || pluginParams.peer;
+    }
+
+    if (proxy["skip-cert-verify"] == null && pluginParams["skip-cert-verify"] != null) {
+      proxy["skip-cert-verify"] = toBool(pluginParams["skip-cert-verify"]);
+    }
+
+    if (!proxy.alpn && pluginParams.alpn) {
+      proxy.alpn = pluginParams.alpn.split(",").map((s) => s.trim()).filter(Boolean);
+    }
+
+    const isWs =
+      pluginParams.obfs === "websocket" ||
+      pluginParams.obfs === "ws" ||
+      pluginParams.mode === "websocket" ||
+      pluginParams.mode === "ws" ||
+      pluginParams.websocket === true ||
+      (pluginParams["v2ray-plugin"] === true && pluginParams.mode == null);
+
+    if (isWs && !proxy.network) {
+      proxy.network = "ws";
+
+      let path =
+        pluginParams["obfs-uri"] ||
+        pluginParams.path ||
+        pluginParams.uri;
+
+      if (path) {
+        const ed = getPathQueryParam(path, "ed");
+        if (isNumericEarlyData(ed)) {
+          path = extractPathQueryParam(path, "ed").path;
+          $set(proxy, "ws-opts.max-early-data", parseSafeIntegerValue(ed));
+          $set(proxy, "ws-opts.early-data-header-name", "Sec-WebSocket-Protocol");
+        }
+        $set(proxy, "ws-opts.path", path);
+      }
+
+      const host =
+        pluginParams["obfs-host"] ||
+        pluginParams.host;
+
+      if (host) {
+        $set(proxy, "ws-opts.headers.Host", host);
+      }
+    }
+  }
+
+
   if (params.type) {
 
     let httpupgrade = false;
