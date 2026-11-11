@@ -554,6 +554,44 @@ function buildVlessExtra(proxy) {
         : '';
 }
 
+function encodeHeySocksVlessFlag(value, field) {
+    const normalized =
+        typeof value === 'string' ? value.trim().toLowerCase() : value;
+
+    if (
+        normalized === true ||
+        normalized === 1 ||
+        normalized === '1' ||
+        normalized === 'true'
+    ) {
+        return '1';
+    }
+
+    if (
+        normalized === false ||
+        normalized === 0 ||
+        normalized === '0' ||
+        normalized === 'false'
+    ) {
+        return '0';
+    }
+
+    throw new Error(
+        `Invalid HeySocks VLESS ${field}: expected boolean or 0/1`,
+    );
+}
+
+function encodeHeySocksVlessH(value) {
+    if (
+        typeof value !== 'string' ||
+        !/^(?:[0-9a-fA-F]{2})+$/.test(value)
+    ) {
+        throw new Error('Invalid HeySocks VLESS h: expected hex bytes');
+    }
+
+    return encodeURIComponent(value);
+}
+
 function vless(proxy) {
     let security = 'none';
     const isReality = proxy['reality-opts'];
@@ -635,6 +673,17 @@ function vless(proxy) {
     if (proxy.flow) {
         flow = `&flow=${encodeURIComponent(proxy.flow)}`;
     }
+
+    let heySocksE = '';
+    if (Object.prototype.hasOwnProperty.call(proxy, 'e')) {
+        heySocksE = `&e=${encodeHeySocksVlessFlag(proxy.e, 'e')}`;
+    }
+
+    let heySocksH = '';
+    if (Object.prototype.hasOwnProperty.call(proxy, 'h')) {
+        heySocksH = `&h=${encodeHeySocksVlessH(proxy.h)}`;
+    }
+
     let extra = '';
     const extraPayload = buildVlessExtra(proxy);
     if (extraPayload) {
@@ -792,9 +841,310 @@ function vless(proxy) {
         proxy.port
     }?security=${encodeURIComponent(
         security,
-    )}${vlessTransport}${packetEncoding}${alpn}${allowInsecure}${pcs}${vcn}${ech}${h2}${sni}${fp}${flow}${sid}${spx}${pbk}${mode}${extra}${fm}${pqv}${encryption}#${encodeURIComponent(
+    )}${vlessTransport}${packetEncoding}${alpn}${allowInsecure}${pcs}${vcn}${ech}${h2}${sni}${fp}${flow}${heySocksE}${heySocksH}${sid}${spx}${pbk}${mode}${extra}${fm}${pqv}${encryption}#${encodeURIComponent(
         proxy.name,
     )}`;
+}
+
+
+// Strict RFC3986 encoder used by HeySocks proprietary XHTTP URI v1.
+// Spaces become %20, never "+".
+function encodeXHTTPComponent(value) {
+    return encodeURIComponent(
+        String(value),
+    ).replace(
+        /[!'()*]/g,
+        (char) =>
+            `%${char
+                .charCodeAt(0)
+                .toString(16)
+                .toUpperCase()}`,
+    );
+}
+
+function encodeXHTTPFlag(value, field) {
+    if (
+        value === true ||
+        value === 1 ||
+        value === '1'
+    ) {
+        return '1';
+    }
+
+    if (
+        value === false ||
+        value === 0 ||
+        value === '0'
+    ) {
+        return '0';
+    }
+
+    throw new Error(
+        `Invalid HeySocks XHTTP ${field}: expected boolean or 0/1`,
+    );
+}
+
+function produceHeySocksXHTTPURI(proxy) {
+    const rawServer =
+        String(proxy.server ?? '');
+
+    const server =
+        rawServer.replace(
+            /^\[|\]$/g,
+            '',
+        );
+
+    const port =
+        Number(proxy.port);
+
+    const password =
+        String(proxy.password ?? '');
+
+    const cipher =
+        String(proxy.cipher ?? '');
+
+    const padding =
+        String(
+            proxy['padding-len'] ?? '',
+        );
+
+    if (!server) {
+        throw new Error(
+            'HeySocks XHTTP URI requires server',
+        );
+    }
+
+    if (
+        !Number.isInteger(port) ||
+        port < 1 ||
+        port > 65535
+    ) {
+        throw new Error(
+            'HeySocks XHTTP URI requires valid port',
+        );
+    }
+
+    if (!password) {
+        throw new Error(
+            'HeySocks XHTTP URI requires password',
+        );
+    }
+
+    if (!cipher) {
+        throw new Error(
+            'HeySocks XHTTP URI requires cipher',
+        );
+    }
+
+    if (!padding) {
+        throw new Error(
+            'HeySocks XHTTP URI requires padding-len',
+        );
+    }
+
+    const rawUotVersion =
+        proxy['udp-over-tcp-version'];
+
+    // Native HeySocks configs may omit this field.
+    // Mihomo decodes the missing Go int field as zero,
+    // so canonical URI v1 must make that zero explicit.
+    const uotVersion =
+        rawUotVersion == null
+            ? 0
+            : Number(rawUotVersion);
+
+    if (
+        rawUotVersion === '' ||
+        !Number.isInteger(uotVersion) ||
+        uotVersion < 0 ||
+        uotVersion > 2
+    ) {
+        throw new Error(
+            'HeySocks XHTTP URI requires udp-over-tcp-version 0, 1 or 2',
+        );
+    }
+
+    const udp = encodeXHTTPFlag(
+        proxy.udp,
+        'udp',
+    );
+
+    const uot = encodeXHTTPFlag(
+        proxy['udp-over-tcp'],
+        'udp-over-tcp',
+    );
+
+    const e = encodeXHTTPFlag(
+        proxy.e,
+        'e',
+    );
+
+    const h =
+        String(proxy.h ?? '');
+
+    const fakeTcp =
+        String(
+            proxy['fake-net']?.tcp ?? '',
+        );
+
+    const fakeUdp =
+        String(
+            proxy['fake-net']?.udp ?? '',
+        );
+
+    const nodeName =
+        String(proxy.name ?? '');
+
+    // IPv6 authority must use brackets.
+    const authorityHost =
+        server.includes(':')
+            ? `[${server}]`
+            : server;
+
+    // Canonical v1 query order is fixed.
+    // DO NOT sort.
+    const query = [
+        'v=1',
+        `cipher=${encodeXHTTPComponent(cipher)}`,
+        `udp=${udp}`,
+        `uot=${uot}`,
+        `uot-version=${uotVersion}`,
+        `padding=${encodeXHTTPComponent(padding)}`,
+        `e=${e}`,
+    ];
+
+    // Empty H is omitted in canonical v1.
+    if (h !== '') {
+        query.push(
+            `h=${encodeXHTTPComponent(h)}`,
+        );
+    }
+
+    // These two keys always exist,
+    // even when the values are empty.
+    query.push(
+        `fake-tcp=${encodeXHTTPComponent(
+            fakeTcp,
+        )}`,
+    );
+
+    query.push(
+        `fake-udp=${encodeXHTTPComponent(
+            fakeUdp,
+        )}`,
+    );
+
+    return (
+        `xhttp://${encodeXHTTPComponent(
+            password,
+        )}` +
+        `@${authorityHost}:${port}` +
+        `?${query.join('&')}` +
+        `#${encodeXHTTPComponent(
+            nodeName,
+        )}`
+    );
+}
+
+function encodeOneSocksFlag(value, field) {
+    if (value === true || value === 1 || value === '1') {
+        return '1';
+    }
+
+    if (value === false || value === 0 || value === '0') {
+        return '0';
+    }
+
+    throw new Error(
+        `Invalid HeySocks OneSocks ${field}: expected boolean or 0/1`,
+    );
+}
+
+function produceHeySocksOneSocksURI(proxy) {
+    const rawServer = String(proxy.server ?? '');
+    const server = rawServer.replace(/^\[|\]$/g, '');
+    const port = Number(proxy.port);
+    const password = String(proxy.password ?? '');
+    const padding = String(proxy['padding-len'] ?? '');
+
+    if (!server) {
+        throw new Error('HeySocks OneSocks URI requires server');
+    }
+
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error('HeySocks OneSocks URI requires valid port');
+    }
+
+    if (!password) {
+        throw new Error('HeySocks OneSocks URI requires password');
+    }
+
+    if (!padding) {
+        throw new Error('HeySocks OneSocks URI requires padding-len');
+    }
+
+    const udp = encodeOneSocksFlag(proxy.udp, 'udp');
+    const uot = encodeOneSocksFlag(proxy['udp-over-tcp'], 'udp-over-tcp');
+    const e = encodeOneSocksFlag(proxy.e, 'e');
+
+    const hasCipher = Object.prototype.hasOwnProperty.call(proxy, 'cipher');
+
+    const cipher = hasCipher ? String(proxy.cipher ?? '') : '';
+
+    if (hasCipher && !cipher) {
+        throw new Error('HeySocks OneSocks URI has empty cipher');
+    }
+
+    const hasUotVersion = Object.prototype.hasOwnProperty.call(
+        proxy,
+        'udp-over-tcp-version',
+    );
+
+    let uotVersion;
+
+    if (hasUotVersion) {
+        if (proxy['udp-over-tcp-version'] === '') {
+            throw new Error(
+                'HeySocks OneSocks URI has empty udp-over-tcp-version',
+            );
+        }
+
+        uotVersion = Number(proxy['udp-over-tcp-version']);
+
+        if (!Number.isInteger(uotVersion) || uotVersion < 0 || uotVersion > 2) {
+            throw new Error(
+                'HeySocks OneSocks URI requires udp-over-tcp-version 0, 1 or 2',
+            );
+        }
+    }
+
+    const authorityHost = server.includes(':') ? `[${server}]` : server;
+
+    // Canonical OneSocks v1 query order.
+    // Optional fields are emitted only when
+    // explicitly present in the source object.
+    const query = ['v=1'];
+
+    if (hasCipher) {
+        query.push(`cipher=${encodeXHTTPComponent(cipher)}`);
+    }
+
+    query.push(`udp=${udp}`, `uot=${uot}`);
+
+    if (hasUotVersion) {
+        query.push(`uot-version=${uotVersion}`);
+    }
+
+    query.push(`padding=${encodeXHTTPComponent(padding)}`, `e=${e}`);
+
+    const nodeName = String(proxy.name ?? '');
+
+    return (
+        `os://${encodeXHTTPComponent(password)}` +
+        `@${authorityHost}:${port}` +
+        `?${query.join('&')}` +
+        `#${encodeXHTTPComponent(nodeName)}`
+    );
 }
 
 export default function URI_Producer() {
@@ -837,6 +1187,14 @@ export default function URI_Producer() {
                     ),
                 )}@${proxy.server}:${proxy.port}#${proxy.name}`;
                 break;
+            case 'xhttp':
+                result = produceHeySocksXHTTPURI(proxy);
+                break;
+
+            case 'os':
+                result = produceHeySocksOneSocksURI(proxy);
+                break;
+
             case 'ss':
                 const userinfo = `${proxy.cipher}:${proxy.password}`;
                 result = `ss://${

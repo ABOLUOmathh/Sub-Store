@@ -198,32 +198,264 @@ function URI_PROXY() {
 }
 function URI_SOCKS() {
     const name = 'URI SOCKS Parser';
+
     const test = (line) => {
         return /^socks:\/\//.test(line);
     };
+
+    const parseQueryParams = (rawQuery = '') => {
+        const params = {};
+
+        for (const item of rawQuery.replace(/^\?/, '').split('&')) {
+            if (!item) continue;
+
+            const separatorIndex = item.indexOf('=');
+
+            const keyRaw =
+                separatorIndex === -1 ? item : item.slice(0, separatorIndex);
+
+            const valueRaw =
+                separatorIndex === -1 ? '' : item.slice(separatorIndex + 1);
+
+            const key = decodeURIComponent(keyRaw);
+            const value = decodeURIComponent(valueRaw);
+
+            params[key] = value;
+        }
+
+        return params;
+    };
+
+    const parseHostPort = (endpoint) => {
+        if (endpoint.startsWith('[')) {
+            const matched = endpoint.match(/^\[([^\]]+)\]:(\d+)$/);
+
+            if (!matched) {
+                throw new Error(`invalid SOCKS server endpoint: ${endpoint}`);
+            }
+
+            return {
+                server: matched[1],
+                port: parseInt(matched[2], 10),
+            };
+        }
+
+        const portIndex = endpoint.lastIndexOf(':');
+
+        if (portIndex === -1) {
+            throw new Error(
+                `port is not present in SOCKS endpoint: ${endpoint}`,
+            );
+        }
+
+        const server = endpoint.slice(0, portIndex);
+        const port = parseInt(endpoint.slice(portIndex + 1), 10);
+
+        if (!server || !Number.isInteger(port)) {
+            throw new Error(`invalid SOCKS server endpoint: ${endpoint}`);
+        }
+
+        return {
+            server,
+            port,
+        };
+    };
+
     const parse = (line) => {
+        /*
+         * Extended SOCKS + GOST format:
+         *
+         * socks://Base64(
+         *   urlencoded(username):urlencoded(password)@server:port
+         * )?remarks=...&gost=Base64(JSON)
+         *
+         * Example GOST metadata:
+         *
+         * {
+         *   "path": "/gost",
+         *   "host": "example.com",
+         *   "route": "ws"
+         * }
+         */
+        const raw = line.slice('socks://'.length);
+
+        const hashIndex = raw.indexOf('#');
+
+        const rawWithoutFragment =
+            hashIndex === -1 ? raw : raw.slice(0, hashIndex);
+
+        const fragment =
+            hashIndex === -1
+                ? undefined
+                : decodeURIComponent(raw.slice(hashIndex + 1));
+
+        const queryIndex = rawWithoutFragment.indexOf('?');
+
+        const encodedContent =
+            queryIndex === -1
+                ? rawWithoutFragment
+                : rawWithoutFragment.slice(0, queryIndex);
+
+        const rawQuery =
+            queryIndex === -1 ? '' : rawWithoutFragment.slice(queryIndex + 1);
+
+        const params = parseQueryParams(rawQuery);
+
+        /*
+         * Service-provider extended GOST SOCKS URI.
+         */
+        if (params.gost) {
+            const decodedContent = Base64.decode(
+                decodeURIComponent(encodedContent),
+            );
+
+            const atIndex = decodedContent.lastIndexOf('@');
+
+            if (atIndex === -1) {
+                throw new Error(
+                    `invalid GOST SOCKS authentication/server payload`,
+                );
+            }
+
+            const auth = decodedContent.slice(0, atIndex);
+            const endpoint = decodedContent.slice(atIndex + 1);
+
+            /*
+             * Important:
+             *
+             * Split before decodeURIComponent().
+             *
+             * pro%3Au123:password
+             *
+             * must become:
+             *
+             * username = pro:u123
+             * password = password
+             */
+            const authSeparatorIndex = auth.indexOf(':');
+
+            if (authSeparatorIndex === -1) {
+                throw new Error(`invalid GOST SOCKS authentication payload`);
+            }
+
+            const username = decodeURIComponent(
+                auth.slice(0, authSeparatorIndex),
+            );
+
+            const password = decodeURIComponent(
+                auth.slice(authSeparatorIndex + 1),
+            );
+
+            let { server, port } = parseHostPort(endpoint);
+
+            let gost;
+
+            try {
+                gost = JSON.parse(Base64.decode(params.gost));
+            } catch (error) {
+                throw new Error(
+                    `invalid GOST SOCKS metadata: ${error.message}`,
+                );
+            }
+
+            /*
+             * Some providers may optionally override the real
+             * connection address/port inside gost metadata.
+             */
+            const gostAddress = getIfNotBlank(gost.address);
+            const gostPort = getIfNotBlank(gost.port);
+
+            if (gostAddress) {
+                server = gostAddress;
+            }
+
+            if (gostPort) {
+                const parsedPort = parseInt(gostPort, 10);
+
+                if (!Number.isInteger(parsedPort)) {
+                    throw new Error(`invalid GOST SOCKS port: ${gostPort}`);
+                }
+
+                port = parsedPort;
+            }
+
+            const route = getIfNotBlank(gost.route);
+
+            const normalizedRoute = route?.trim().toLowerCase();
+
+            if (!['ws', 'wss', 'websocket'].includes(normalizedRoute)) {
+                throw new Error(`unsupported GOST SOCKS route: ${route}`);
+            }
+
+            const wsHost = getIfNotBlank(gost.host) || server;
+
+            const wsPath = getIfNotBlank(gost.path) || '/';
+
+            const proxy = {
+                name:
+                    getIfNotBlank(params.remarks) ||
+                    fragment ||
+                    `socks ${server}:${port}`,
+                type: 'socks5',
+                server,
+                port,
+                username,
+                password,
+                network: 'ws',
+                'ws-opts': {
+                    path: wsPath,
+                    headers: {
+                        Host: wsHost,
+                    },
+                },
+            };
+
+            /*
+             * wss = WebSocket over TLS.
+             *
+             * Our custom Mihomo SOCKS implementation uses:
+             *
+             * network: ws
+             * tls: true
+             */
+            if (normalizedRoute === 'wss') {
+                proxy.tls = true;
+            }
+
+            return proxy;
+        }
+
+        /*
+         * Original Sub-Store SOCKS URI behavior.
+         * Keep this path unchanged for backward compatibility.
+         */
+
         // parse url
         // eslint-disable-next-line no-unused-vars
-        let [__, type, auth, server, port, query, name] = line.match(
+        let [__, type, auth, server, port, query, uriName] = line.match(
             /^(socks)?:\/\/(?:(.*)@)?(.*?)(?::(\d+?))?(\?.*?)?(?:#(.*?))?$/,
         );
+
         if (port) {
             port = parseInt(port, 10);
         } else {
             $.error(`port is not present in line: ${line}`);
             throw new Error(`port is not present in line: ${line}`);
         }
+
         let username, password;
+
         if (auth) {
             const parsed = Base64.decode(decodeURIComponent(auth)).split(':');
+
             username = parsed[0];
             password = parsed[1];
         }
 
         const proxy = {
             name:
-                name != null
-                    ? decodeURIComponent(name)
+                uriName != null
+                    ? decodeURIComponent(uriName)
                     : `${type} ${server}:${port}`,
             type: 'socks5',
             server,
@@ -234,10 +466,462 @@ function URI_SOCKS() {
 
         return proxy;
     };
+
     return { name, test, parse };
 }
+
+
+// Parse HeySocks proprietary XHTTP canonical URI v1.
+// This is independent from VLESS:
+//     vless://...?type=xhttp...
+function URI_XHTTP() {
+    const name = 'URI HeySocks XHTTP Parser';
+
+    const test = (line) => {
+        return /^xhttp:\/\//.test(line);
+    };
+
+    const decode = (value) => {
+        // decodeURIComponent does not convert "+" to space.
+        return decodeURIComponent(value);
+    };
+
+    const parseFlag = (value, field) => {
+        if (value === '0') {
+            return false;
+        }
+
+        if (value === '1') {
+            return true;
+        }
+
+        throw new Error(
+            `Invalid HeySocks XHTTP ${field}: expected 0 or 1`,
+        );
+    };
+
+    const parse = (line) => {
+        const prefix = 'xhttp://';
+
+        let body = line.slice(prefix.length);
+
+        let fragment = '';
+        const hash = body.indexOf('#');
+
+        if (hash !== -1) {
+            fragment = body.slice(hash + 1);
+            body = body.slice(0, hash);
+        }
+
+        const queryIndex = body.indexOf('?');
+
+        if (queryIndex === -1) {
+            throw new Error(
+                'HeySocks XHTTP query is required',
+            );
+        }
+
+        const authorityPart =
+            body.slice(0, queryIndex);
+
+        const queryString =
+            body.slice(queryIndex + 1);
+
+        const at =
+            authorityPart.lastIndexOf('@');
+
+        if (at <= 0) {
+            throw new Error(
+                'HeySocks XHTTP password is required',
+            );
+        }
+
+        const password =
+            decode(authorityPart.slice(0, at));
+
+        const authority =
+            authorityPart.slice(at + 1);
+
+        let server;
+        let portRaw;
+
+        if (authority.startsWith('[')) {
+            const close =
+                authority.indexOf(']');
+
+            if (
+                close <= 1 ||
+                authority[close + 1] !== ':'
+            ) {
+                throw new Error(
+                    'Invalid HeySocks XHTTP IPv6 authority',
+                );
+            }
+
+            server =
+                authority.slice(1, close);
+
+            portRaw =
+                authority.slice(close + 2);
+        } else {
+            const colon =
+                authority.lastIndexOf(':');
+
+            if (colon <= 0) {
+                throw new Error(
+                    'Invalid HeySocks XHTTP authority',
+                );
+            }
+
+            server =
+                authority.slice(0, colon);
+
+            portRaw =
+                authority.slice(colon + 1);
+
+            if (server.includes(':')) {
+                throw new Error(
+                    'HeySocks XHTTP IPv6 must use brackets',
+                );
+            }
+        }
+
+        if (!/^\d+$/.test(portRaw)) {
+            throw new Error(
+                'Invalid HeySocks XHTTP port',
+            );
+        }
+
+        const port = Number(portRaw);
+
+        if (port < 1 || port > 65535) {
+            throw new Error(
+                'Invalid HeySocks XHTTP port range',
+            );
+        }
+
+        const params = {};
+        const allowed = new Set([
+            'v',
+            'cipher',
+            'udp',
+            'uot',
+            'uot-version',
+            'padding',
+            'e',
+            'h',
+            'fake-tcp',
+            'fake-udp',
+        ]);
+
+        for (const item of queryString.split('&')) {
+            if (!item) {
+                continue;
+            }
+
+            const eq = item.indexOf('=');
+
+            if (eq === -1) {
+                throw new Error(
+                    `Invalid XHTTP query item: ${item}`,
+                );
+            }
+
+            const key = item.slice(0, eq);
+            const value = decode(
+                item.slice(eq + 1),
+            );
+
+            if (!allowed.has(key)) {
+                throw new Error(
+                    `Unsupported XHTTP query key: ${key}`,
+                );
+            }
+
+            if (
+                Object.prototype.hasOwnProperty.call(
+                    params,
+                    key,
+                )
+            ) {
+                throw new Error(
+                    `Duplicate XHTTP query key: ${key}`,
+                );
+            }
+
+            params[key] = value;
+        }
+
+        const required = [
+            'v',
+            'cipher',
+            'udp',
+            'uot',
+            'uot-version',
+            'padding',
+            'e',
+            'fake-tcp',
+            'fake-udp',
+        ];
+
+        for (const key of required) {
+            if (
+                !Object.prototype.hasOwnProperty.call(
+                    params,
+                    key,
+                )
+            ) {
+                throw new Error(
+                    `Missing XHTTP query key: ${key}`,
+                );
+            }
+        }
+
+        if (params.v !== '1') {
+            throw new Error(
+                `Unsupported XHTTP URI version: ${params.v}`,
+            );
+        }
+
+        if (!/^[012]$/.test(params['uot-version'])) {
+            throw new Error(
+                'Invalid XHTTP uot-version',
+            );
+        }
+
+        if (!password || !server || !params.cipher) {
+            throw new Error(
+                'Incomplete HeySocks XHTTP URI',
+            );
+        }
+
+        return {
+            type: 'xhttp',
+            name: decode(fragment),
+            server,
+            port,
+            password,
+            cipher: params.cipher,
+            udp: parseFlag(
+                params.udp,
+                'udp',
+            ),
+            'udp-over-tcp': parseFlag(
+                params.uot,
+                'uot',
+            ),
+            'udp-over-tcp-version':
+                Number(params['uot-version']),
+            'padding-len':
+                params.padding,
+            e: parseFlag(
+                params.e,
+                'e',
+            ),
+            h: params.h || '',
+            'fake-net': {
+                tcp: params['fake-tcp'],
+                udp: params['fake-udp'],
+            },
+        };
+    };
+
+    return {
+        name,
+        test,
+        parse,
+    };
+}
+
+// Parse HeySocks proprietary OneSocks canonical URI v1.
+function URI_OS() {
+    const name = 'URI HeySocks OneSocks Parser';
+
+    const test = (line) => {
+        return /^os:\/\//.test(line);
+    };
+
+    const decode = (value) => {
+        // Strict URI component semantics:
+        // literal "+" remains "+", never becomes a space.
+        return decodeURIComponent(value);
+    };
+
+    const parseFlag = (value, field) => {
+        if (value === '0') {
+            return false;
+        }
+
+        if (value === '1') {
+            return true;
+        }
+
+        throw new Error(`Invalid HeySocks OneSocks ${field}: expected 0 or 1`);
+    };
+
+    const parse = (line) => {
+        const prefix = 'os://';
+
+        let body = line.slice(prefix.length);
+
+        let fragment = '';
+        const hash = body.indexOf('#');
+
+        if (hash !== -1) {
+            fragment = body.slice(hash + 1);
+            body = body.slice(0, hash);
+        }
+
+        const queryIndex = body.indexOf('?');
+
+        if (queryIndex === -1) {
+            throw new Error('HeySocks OneSocks query is required');
+        }
+
+        const authorityPart = body.slice(0, queryIndex);
+        const queryString = body.slice(queryIndex + 1);
+
+        const at = authorityPart.lastIndexOf('@');
+
+        if (at <= 0) {
+            throw new Error('HeySocks OneSocks password is required');
+        }
+
+        const password = decode(authorityPart.slice(0, at));
+        const authority = authorityPart.slice(at + 1);
+
+        let server;
+        let portRaw;
+
+        if (authority.startsWith('[')) {
+            const close = authority.indexOf(']');
+
+            if (close <= 1 || authority[close + 1] !== ':') {
+                throw new Error('Invalid HeySocks OneSocks IPv6 authority');
+            }
+
+            server = authority.slice(1, close);
+            portRaw = authority.slice(close + 2);
+        } else {
+            const colon = authority.lastIndexOf(':');
+
+            if (colon <= 0) {
+                throw new Error('Invalid HeySocks OneSocks authority');
+            }
+
+            server = authority.slice(0, colon);
+            portRaw = authority.slice(colon + 1);
+
+            if (server.includes(':')) {
+                throw new Error('HeySocks OneSocks IPv6 must use brackets');
+            }
+        }
+
+        if (!/^\d+$/.test(portRaw)) {
+            throw new Error('Invalid HeySocks OneSocks port');
+        }
+
+        const port = Number(portRaw);
+
+        if (port < 1 || port > 65535) {
+            throw new Error('Invalid HeySocks OneSocks port range');
+        }
+
+        const params = {};
+        const allowed = new Set([
+            'v',
+            'cipher',
+            'udp',
+            'uot',
+            'uot-version',
+            'padding',
+            'e',
+        ]);
+
+        for (const item of queryString.split('&')) {
+            if (!item) {
+                continue;
+            }
+
+            const eq = item.indexOf('=');
+
+            if (eq === -1) {
+                throw new Error(`Invalid OneSocks query item: ${item}`);
+            }
+
+            const key = item.slice(0, eq);
+            const value = decode(item.slice(eq + 1));
+
+            if (!allowed.has(key)) {
+                throw new Error(`Unsupported OneSocks query key: ${key}`);
+            }
+
+            if (Object.prototype.hasOwnProperty.call(params, key)) {
+                throw new Error(`Duplicate OneSocks query key: ${key}`);
+            }
+
+            params[key] = value;
+        }
+
+        const required = ['v', 'udp', 'uot', 'padding', 'e'];
+
+        for (const key of required) {
+            if (!Object.prototype.hasOwnProperty.call(params, key)) {
+                throw new Error(`Missing OneSocks query key: ${key}`);
+            }
+        }
+
+        if (params.v !== '1') {
+            throw new Error(`Unsupported OneSocks URI version: ${params.v}`);
+        }
+
+        if (!password || !server || !params.padding) {
+            throw new Error('Incomplete HeySocks OneSocks URI');
+        }
+
+        if (
+            Object.prototype.hasOwnProperty.call(params, 'cipher') &&
+            !params.cipher
+        ) {
+            throw new Error('Invalid OneSocks cipher');
+        }
+
+        if (
+            Object.prototype.hasOwnProperty.call(params, 'uot-version') &&
+            !/^[012]$/.test(params['uot-version'])
+        ) {
+            throw new Error('Invalid OneSocks uot-version');
+        }
+
+        const proxy = {
+            type: 'os',
+            name: decode(fragment),
+            server,
+            port,
+            password,
+            udp: parseFlag(params.udp, 'udp'),
+            'udp-over-tcp': parseFlag(params.uot, 'uot'),
+            'padding-len': params.padding,
+            e: parseFlag(params.e, 'e'),
+        };
+
+        if (Object.prototype.hasOwnProperty.call(params, 'cipher')) {
+            proxy.cipher = params.cipher;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(params, 'uot-version')) {
+            proxy['udp-over-tcp-version'] = Number(params['uot-version']);
+        }
+
+        return proxy;
+    };
+
+    return { name, test, parse };
+}
+
 // Parse SS URI format (only supports new SIP002, legacy format is depreciated).
 // reference: https://github.com/shadowsocks/shadowsocks-org/wiki/SIP002-URI-Scheme
+
 function URI_SS() {
     const name = 'URI SS Parser';
     const test = (line) => {
@@ -1900,6 +2584,36 @@ function URI_VLESS() {
         proxy['name-cert-verify'] = proxy._vcn?.[0];
         proxy._h2 = /(TRUE)|1/i.test(params.h2);
 
+        // HeySocks VLESS compatibility extension.
+        //
+        // `e` and `h` are independent fields. Keep them absent for
+        // ordinary VLESS URIs so legacy parsing remains unchanged.
+        if (Object.prototype.hasOwnProperty.call(params, 'e')) {
+            const e = `${params.e}`.trim().toLowerCase();
+
+            if (e === '1' || e === 'true') {
+                proxy.e = true;
+            } else if (e === '0' || e === 'false') {
+                proxy.e = false;
+            } else {
+                throw new Error(
+                    `Invalid HeySocks VLESS e value: ${params.e}`,
+                );
+            }
+        }
+
+        if (Object.prototype.hasOwnProperty.call(params, 'h')) {
+            const h = params.h;
+
+            // Match Mihomo's hex-decoding requirement without imposing
+            // a fixed HeySocks v505 length or prefix.
+            if (!/^(?:[0-9a-fA-F]{2})+$/.test(h)) {
+                throw new Error('Invalid HeySocks VLESS h: expected hex bytes');
+            }
+
+            proxy.h = h;
+        }
+
         switch (`${params.packetEncoding || ''}`.trim().toLowerCase()) {
             case 'none':
                 proxy['packet-encoding'] = '';
@@ -2528,6 +3242,9 @@ function URI_Trojan() {
         const matched = /^(trojan:\/\/.*?@.*?)(:(\d+))?\/?(\?.*?)?$/.exec(
             newLine,
         );
+        if (!matched) {
+            throw new Error('Invalid trojan url');
+        }
         const port = matched?.[2];
         if (!port) {
             newLine = newLine.replace(matched[1], `${matched[1]}:443`);
@@ -2590,6 +3307,8 @@ function Clash_All() {
                 'trojan',
                 'tuic',
                 'vless',
+                'xhttp',
+                'os',
                 'hysteria',
                 'hysteria2',
                 'wireguard',
@@ -3156,6 +3875,8 @@ function isIP(ip) {
 export default [
     URI_PROXY(),
     URI_SOCKS(),
+    URI_XHTTP(),
+    URI_OS(),
     URI_SS(),
     URI_SSR(),
     URI_VMess(),
