@@ -226,10 +226,6 @@ function FlagOperator({ mode, tw }) {
                     proxy.name = newFlag + ' ' + proxy.name;
                     if (tw == 'ws') {
                         proxy.name = proxy.name.replace(/🇹🇼/g, '🇼🇸');
-                    } else if (tw == 'tw') {
-                        // 不变
-                    } else {
-                        proxy.name = proxy.name.replace(/🇹🇼/g, '🇨🇳');
                     }
                 }
                 return proxy;
